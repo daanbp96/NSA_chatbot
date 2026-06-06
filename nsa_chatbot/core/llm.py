@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterator
 
 from nsa_chatbot.config import (
+    ANSWER_MAX_TOKENS,
     ANSWER_MODEL_ANTHROPIC,
     ANSWER_MODEL_OPENAI,
     ANSWER_PROVIDER,
@@ -15,6 +16,9 @@ from nsa_chatbot.config import (
 class LLM:
     def __init__(self, provider: str = ANSWER_PROVIDER, model: str | None = None):
         self.provider = provider.lower()
+        # Raw provider stop/finish reason from the last stream() call:
+        # "max_tokens"/"length" means the answer was cut off at ANSWER_MAX_TOKENS.
+        self.last_stop_reason: str | None = None
         if self.provider in {"anthropic", "claude"}:
             import anthropic
 
@@ -37,17 +41,20 @@ class LLM:
         return f"{self.provider}:{self.model}"
 
     def stream(self, system: str, user: str) -> Iterator[str]:
+        self.last_stop_reason = None
         if self.provider in {"anthropic", "claude"}:
             with self._client.messages.stream(
                 model=self.model,
-                max_tokens=2000,
+                max_tokens=ANSWER_MAX_TOKENS,
                 system=system,
                 messages=[{"role": "user", "content": user}],
             ) as s:
                 yield from s.text_stream
+                self.last_stop_reason = s.get_final_message().stop_reason
         else:
             resp = self._client.chat.completions.create(
                 model=self.model,
+                max_tokens=ANSWER_MAX_TOKENS,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -55,6 +62,9 @@ class LLM:
                 stream=True,
             )
             for event in resp:
-                delta = event.choices[0].delta
+                choice = event.choices[0]
+                delta = choice.delta
                 if delta and delta.content:
                     yield delta.content
+                if choice.finish_reason:
+                    self.last_stop_reason = choice.finish_reason

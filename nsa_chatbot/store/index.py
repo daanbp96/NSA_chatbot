@@ -73,6 +73,10 @@ def build_index(
 
     coll = client.create_collection(
         name=COLLECTION,
+        # Cosine space: bounded [0,2] distances (so RELEVANCE_MAX_DISTANCE is a
+        # portable cutoff) and correct ranking regardless of whether the
+        # embedder normalizes its vectors.
+        configuration={"hnsw": {"space": "cosine"}},
         metadata={"embedder": embedder.model_id},
     )
 
@@ -100,19 +104,40 @@ def query(
     k: int = 12,
     where: dict | None = None,
     embedder: Embedder | None = None,
+    max_distance: float | None = None,
 ) -> list[Chunk]:
+    """Vector search. ``max_distance`` drops results past that cosine distance,
+    so an off-topic query can legitimately return an empty list.
+    """
     embedder = embedder or get_embedder()
     coll = get_collection()
+    # Fail loud on an embedder mismatch. The collection records the model that
+    # built it; querying with a different model embeds into an incompatible
+    # vector space, which silently returns garbage (same dim) or crashes
+    # (different dim). Better to refuse than to cite nonsense.
+    built_with = (coll.metadata or {}).get("embedder")
+    if built_with and built_with != embedder.model_id:
+        raise RuntimeError(
+            f"Embedder mismatch: index was built with {built_with!r} but the "
+            f"current embedder is {embedder.model_id!r}. Rebuild the index "
+            f"(build_index) or restore EMBEDDING_PROVIDER/EMBEDDING_MODEL."
+        )
     [emb] = embedder.embed([text])
     res = coll.query(
         query_embeddings=[emb],
         n_results=k,
         where=where or None,
+        include=["documents", "metadatas", "distances"],
     )
     out: list[Chunk] = []
-    for cid, doc, meta in zip(
-        res["ids"][0], res["documents"][0], res["metadatas"][0]
+    for cid, doc, meta, dist in zip(
+        res["ids"][0],
+        res["documents"][0],
+        res["metadatas"][0],
+        res["distances"][0],
     ):
+        if max_distance is not None and dist is not None and dist > max_distance:
+            continue
         out.append(
             Chunk(chunk_id=cid, text=doc, metadata=ChunkMetadata.from_chroma(meta or {}))
         )

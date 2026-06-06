@@ -43,7 +43,12 @@ class Embedder:
                 )
                 out.extend(d.embedding for d in resp.data)
             return out
-        return [list(map(float, v)) for v in self._client.encode(list(texts))]
+        # normalize_embeddings=True so local vectors are unit-length, matching
+        # OpenAI's normalized output and the index's cosine space.
+        return [
+            list(map(float, v))
+            for v in self._client.encode(list(texts), normalize_embeddings=True)
+        ]
 
 
 @lru_cache(maxsize=1)
