@@ -15,7 +15,7 @@ import yaml
 
 from nsa_chatbot.config import CORPUS_DIR, SOURCES_YAML
 from nsa_chatbot.ingest.fetcher import FetchedDoc, fetch_ecfr, fetch_html, fetch_pdf
-from nsa_chatbot.schemas import (
+from nsa_chatbot.ingest.schemas import (
     Frontmatter,
     IngestError,
     IngestFailure,

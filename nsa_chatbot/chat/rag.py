@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from nsa_chatbot.chat.llm import LLM
+from nsa_chatbot.core.llm import LLM
 from nsa_chatbot.config import TOP_K
-from nsa_chatbot.ingest.chunker import Chunk
+from nsa_chatbot.core.chunk import Chunk
 from nsa_chatbot.store.index import query as vector_query
 
 SYSTEM_PROMPT = """You are a careful legal research assistant for the
@@ -46,16 +46,16 @@ def _format_sources(chunks: list[Chunk]) -> str:
     """Numbered SOURCES block for the LLM prompt."""
     lines: list[str] = []
     for i, c in enumerate(chunks, start=1):
-        meta = c.metadata or {}
-        citation = meta.get("citation", "?")
-        section = meta.get("section")
-        sub = meta.get("subsection")
+        meta = c.metadata
+        citation = meta.citation or "?"
+        section = meta.section
+        sub = meta.subsection
         cite_full = citation
         if section and section not in citation:
             cite_full = f"{citation}, § {section}"
         if sub:
             cite_full += f"({sub})"
-        url = meta.get("source_url", "")
+        url = meta.source_url
         header = f"[S{i}] {cite_full}"
         if url:
             header += f"  <{url}>"
@@ -69,9 +69,9 @@ def _format_source_footer(chunks: list[Chunk]) -> str:
     """Compact footer for the UI's sources panel."""
     lines: list[str] = []
     for i, c in enumerate(chunks, start=1):
-        meta = c.metadata or {}
-        citation = meta.get("citation", "?")
-        url = meta.get("source_url", "")
+        meta = c.metadata
+        citation = meta.citation or "?"
+        url = meta.source_url
         line = f"[S{i}] {citation}"
         if url:
             line += f"  {url}"

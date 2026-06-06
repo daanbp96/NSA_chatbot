@@ -1,7 +1,7 @@
 """Source fetchers: ``fetch_ecfr``, ``fetch_html``, ``fetch_pdf``.
 
 These are thin orchestrators around HTTP + format-specific parsers in
-:mod:`nsa_chatbot.formats`. Each raises :class:`IngestError` on failure;
+:mod:`nsa_chatbot.ingest.formats`. Each raises :class:`IngestError` on failure;
 the orchestrator catches and records the reason per source.
 """
 
@@ -18,10 +18,10 @@ from tenacity import (
     wait_exponential,
 )
 
-from nsa_chatbot.formats.ecfr import parse_ecfr_xml
-from nsa_chatbot.formats.html_pages import extract_html
-from nsa_chatbot.formats.pdf import extract_pdf
-from nsa_chatbot.schemas import IngestError
+from nsa_chatbot.ingest.formats.ecfr import parse_ecfr_xml
+from nsa_chatbot.ingest.formats.html_pages import extract_html
+from nsa_chatbot.ingest.formats.pdf import extract_pdf
+from nsa_chatbot.ingest.schemas import IngestError
 
 # Browser UA -- some state legislature sites 403 non-browser clients.
 USER_AGENT = (

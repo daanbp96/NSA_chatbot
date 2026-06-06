@@ -11,9 +11,6 @@ Shapes:
   orchestrator validates them per ``fetcher`` at use time.
 * :class:`Frontmatter` -- the YAML block at the top of each ``corpus/**.txt``
   file. Written by the ingest step, read back by the chunker.
-* :class:`ChunkMetadata` -- the per-chunk metadata attached to each ``Chunk``
-  and then to each row in the Chroma collection. Chroma requires scalar
-  metadata values; :meth:`ChunkMetadata.to_chroma` enforces that.
 * :class:`IngestResult` / :class:`IngestFailure` -- structured summary returned
   by :func:`nsa_chatbot.ingest.run.ingest` so the Admin tab can show per-source
   failure reasons rather than just a count.
@@ -22,7 +19,6 @@ Shapes:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any
 
 
 class IngestError(Exception):
@@ -95,41 +91,6 @@ class Frontmatter:
         }
         merged = {**defaults, **{k: v for k, v in (data or {}).items() if k in known}}
         return cls(**merged)
-
-
-@dataclass
-class ChunkMetadata:
-    """Per-chunk metadata. Carried on :class:`~nsa_chatbot.ingest.chunker.Chunk`.
-
-    ``section`` / ``section_heading`` / ``subsection`` are populated when the
-    chunker can identify them from section / subsection markers; otherwise
-    ``None``.
-    """
-
-    source_id: str
-    jurisdiction: str
-    kind: str
-    citation: str
-    short: str
-    source_url: str
-    section: str | None = None
-    section_heading: str | None = None
-    subsection: str | None = None
-
-    @classmethod
-    def from_frontmatter(cls, fm: Frontmatter) -> ChunkMetadata:
-        return cls(
-            source_id=fm.id,
-            jurisdiction=fm.jurisdiction,
-            kind=fm.kind,
-            citation=fm.citation,
-            short=fm.short,
-            source_url=fm.source_url,
-        )
-
-    def to_chroma(self) -> dict[str, Any]:
-        """Scalar-only dict for Chroma. ``None`` becomes ``""``."""
-        return {k: ("" if v is None else v) for k, v in asdict(self).items()}
 
 
 @dataclass

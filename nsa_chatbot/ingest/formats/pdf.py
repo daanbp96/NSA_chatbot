@@ -11,8 +11,8 @@ import io
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-from nsa_chatbot.formats.html_pages import normalize_whitespace
-from nsa_chatbot.schemas import IngestError
+from nsa_chatbot.ingest.formats.html_pages import normalize_whitespace
+from nsa_chatbot.ingest.schemas import IngestError
 
 SHORT_BODY_THRESHOLD = 200
 

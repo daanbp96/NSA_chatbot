@@ -13,7 +13,7 @@ import re
 
 from bs4 import BeautifulSoup
 
-from nsa_chatbot.formats.legal_text import render_section_marker
+from nsa_chatbot.ingest.formats.legal_text import render_section_marker
 
 
 def parse_ecfr_xml(xml_bytes: bytes, section_prefix: str | None = None) -> str:

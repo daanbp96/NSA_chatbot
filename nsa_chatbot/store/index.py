@@ -17,8 +17,9 @@ import chromadb
 from chromadb.config import Settings
 
 from nsa_chatbot.config import CORPUS_DIR, INDEX_DIR
-from nsa_chatbot.ingest.chunker import Chunk, chunk_corpus
-from nsa_chatbot.store.embedder import Embedder, get_embedder
+from nsa_chatbot.core.chunk import Chunk, ChunkMetadata
+from nsa_chatbot.ingest.chunker import chunk_corpus
+from nsa_chatbot.core.embedder import Embedder, get_embedder
 
 COLLECTION = "nsa_corpus"
 
@@ -82,17 +83,12 @@ def build_index(
         coll.add(
             ids=[c.chunk_id for c in batch],
             documents=texts,
-            metadatas=[_clean_meta(c.metadata) for c in batch],
+            metadatas=[c.metadata.to_chroma() for c in batch],
             embeddings=embeddings,
         )
         total += len(batch)
 
     return total
-
-
-def _clean_meta(meta: dict) -> dict:
-    """Chroma requires scalar metadata values."""
-    return {k: ("" if v is None else v) for k, v in meta.items()}
 
 
 def get_collection() -> chromadb.Collection:
@@ -117,7 +113,9 @@ def query(
     for cid, doc, meta in zip(
         res["ids"][0], res["documents"][0], res["metadatas"][0]
     ):
-        out.append(Chunk(chunk_id=cid, text=doc, metadata=meta or {}))
+        out.append(
+            Chunk(chunk_id=cid, text=doc, metadata=ChunkMetadata.from_chroma(meta or {}))
+        )
     return out
 
 

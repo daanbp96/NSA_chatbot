@@ -11,34 +11,39 @@ Strategy, in order of preference:
 3. If a section is still too long, split on subsection markers ``(a)``, ``(1)``.
 4. Final fallback: token-window split with overlap (rare, for unstructured guidance).
 
-Format-specific regexes live in :mod:`nsa_chatbot.formats.legal_text` so the
+Format-specific regexes live in :mod:`nsa_chatbot.ingest.formats.legal_text` so the
 fetcher and chunker share one source of truth for section-marker syntax.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import tiktoken
 import yaml
 
 from nsa_chatbot.config import CHUNK_OVERLAP_TOKENS, CHUNK_TARGET_TOKENS
-from nsa_chatbot.formats.legal_text import SECTION_MARKER_RE, SUBSECTION_RE
-from nsa_chatbot.schemas import ChunkMetadata, Frontmatter
+from nsa_chatbot.core.chunk import Chunk, ChunkMetadata
+from nsa_chatbot.ingest.formats.legal_text import SECTION_MARKER_RE, SUBSECTION_RE
+from nsa_chatbot.ingest.schemas import Frontmatter
 
 _ENC = tiktoken.get_encoding("cl100k_base")
 
 
-@dataclass
-class Chunk:
-    chunk_id: str
-    text: str
-    metadata: dict = field(default_factory=dict)
-
-    def n_tokens(self) -> int:
-        return len(_ENC.encode(self.text))
+def _meta_from_frontmatter(fm: Frontmatter) -> ChunkMetadata:
+    """Base chunk metadata from a corpus file's frontmatter. ``section`` /
+    ``subsection`` stay ``None`` here; the chunker fills them in as it
+    identifies markers.
+    """
+    return ChunkMetadata(
+        source_id=fm.id,
+        jurisdiction=fm.jurisdiction,
+        kind=fm.kind,
+        citation=fm.citation,
+        short=fm.short,
+        source_url=fm.source_url,
+    )
 
 
 def _read_frontmatter(path: Path) -> tuple[Frontmatter, str]:
@@ -124,7 +129,7 @@ def chunk_file(path: Path) -> list[Chunk]:
     if not body.strip():
         return []
 
-    base_meta = ChunkMetadata.from_frontmatter(fm)
+    base_meta = _meta_from_frontmatter(fm)
 
     # Holds (metadata, text, section, subsection) before chunk_id assignment.
     raw_chunks: list[tuple[ChunkMetadata, str, str | None, str | None]] = []
@@ -215,7 +220,7 @@ def _make_chunk(
         cid_parts.append(label)
     cid_parts.append(str(index))
     chunk_id = ":".join(cid_parts)
-    return Chunk(chunk_id=chunk_id, text=text, metadata=meta.to_chroma())
+    return Chunk(chunk_id=chunk_id, text=text, metadata=meta)
 
 
 def chunk_corpus(corpus_dir: Path) -> Iterable[Chunk]:
