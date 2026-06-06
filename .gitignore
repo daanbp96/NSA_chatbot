@@ -1,0 +1,17 @@
+# Secrets
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Generated artifacts
+corpus/
+index/
+
+# OS / editor
+.DS_Store
+.vscode/*.log
