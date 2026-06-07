@@ -13,6 +13,7 @@ dependencies = [
     "pypdf>=6.11.0",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
+    "ruamel-yaml>=0.19.1",
     "tenacity>=9.1.4",
     "tiktoken>=0.13.0",
 ]

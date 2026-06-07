@@ -8,6 +8,7 @@ Public functions (intended to be called from API endpoints or tests):
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections import Counter
 from collections.abc import Iterable
@@ -15,11 +16,19 @@ from pathlib import Path
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.errors import NotFoundError as CollectionNotFoundError
 
 from nsa_chatbot.config import CORPUS_DIR, INDEX_DIR
 from nsa_chatbot.core.chunk import Chunk, ChunkMetadata
 from nsa_chatbot.ingest.chunker import chunk_corpus
 from nsa_chatbot.core.embedder import Embedder, get_embedder
+
+# Re-exported so callers can catch "the index isn't built yet" by type without
+# importing chromadb themselves.
+__all__ = [
+    "build_index", "query", "lookup_by_citation", "stats",
+    "chunk_counts_by_source", "get_collection", "CollectionNotFoundError",
+]
 
 COLLECTION = "nsa_corpus"
 
@@ -144,6 +153,37 @@ def query(
     return out
 
 
+def lookup_by_citation(
+    tokens: list[str],
+    where: dict | None = None,
+    limit: int = 4,
+) -> list[Chunk]:
+    """Exact provision lookup by section-number token — scans metadata only (no
+    embedding, no distance threshold), so a named provision is found regardless
+    of how the question is phrased. A chunk matches when its ``section`` equals a
+    token, or its ``citation`` contains the token as a whole word (handles state
+    chunks, whose section number lives only in the citation string).
+    """
+    if not tokens:
+        return []
+    coll = get_collection()
+    res = coll.get(where=where or None, include=["documents", "metadatas"])
+    patterns = [re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE) for t in tokens]
+    tokenset = {t.lower() for t in tokens}
+    out: list[Chunk] = []
+    for cid, doc, meta in zip(res["ids"], res["documents"], res["metadatas"]):
+        meta = meta or {}
+        section = (meta.get("section") or "").lower()
+        citation = meta.get("citation") or ""
+        if section in tokenset or any(p.search(citation) for p in patterns):
+            out.append(
+                Chunk(chunk_id=cid, text=doc, metadata=ChunkMetadata.from_chroma(meta))
+            )
+            if len(out) >= limit:
+                break
+    return out
+
+
 def stats() -> dict:
     """Real per-jurisdiction chunk counts across the whole collection.
 
@@ -159,3 +199,13 @@ def stats() -> dict:
     metadatas = coll.get(include=["metadatas"]).get("metadatas") or []
     jurisdictions = Counter(m.get("jurisdiction", "?") for m in metadatas)
     return {"count": count, "jurisdictions": dict(jurisdictions)}
+
+
+def chunk_counts_by_source() -> dict[str, int]:
+    """Indexed chunk count per ``source_id``. Empty dict if the index is missing."""
+    try:
+        coll = get_collection()
+    except Exception:
+        return {}
+    metadatas = coll.get(include=["metadatas"]).get("metadatas") or []
+    return dict(Counter(m.get("source_id", "?") for m in metadatas))

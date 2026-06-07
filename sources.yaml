@@ -21,7 +21,7 @@ federal:
     citation: "42 U.S.C. § 300gg-111 (Preventing surprise medical bills)"
     short: "42 USC 300gg-111"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-111&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 42-usc-300gg-112
     jurisdiction: federal
@@ -29,7 +29,7 @@ federal:
     citation: "42 U.S.C. § 300gg-112 (Ending surprise air ambulance bills)"
     short: "42 USC 300gg-112"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-112&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 42-usc-300gg-131
     jurisdiction: federal
@@ -37,7 +37,7 @@ federal:
     citation: "42 U.S.C. § 300gg-131 (Balance billing in cases of emergency services)"
     short: "42 USC 300gg-131"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-131&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 42-usc-300gg-132
     jurisdiction: federal
@@ -45,15 +45,16 @@ federal:
     citation: "42 U.S.C. § 300gg-132 (Balance billing in cases of non-emergency services)"
     short: "42 USC 300gg-132"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-132&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 42-usc-300gg-136
     jurisdiction: federal
     kind: statute
-    citation: "42 U.S.C. § 300gg-136 (Disclosure on patient protections against balance billing)"
+    citation: "42 U.S.C. § 300gg-136 (Disclosure on patient protections against balance
+      billing)"
     short: "42 USC 300gg-136"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-136&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 42-usc-300gg-137
     jurisdiction: federal
@@ -61,7 +62,7 @@ federal:
     citation: "42 U.S.C. § 300gg-137 (Continuity of care)"
     short: "42 USC 300gg-137"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-137&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 42-usc-300gg-138
     jurisdiction: federal
@@ -69,7 +70,7 @@ federal:
     citation: "42 U.S.C. § 300gg-138 (Maintenance of price comparison tool)"
     short: "42 USC 300gg-138"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-138&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 42-usc-300gg-139
     jurisdiction: federal
@@ -77,7 +78,7 @@ federal:
     citation: "42 U.S.C. § 300gg-139 (Provider directory information)"
     short: "42 USC 300gg-139"
     url: "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title42-section300gg-139&num=0&edition=prelim"
-    fetcher: html
+    fetcher: web_fetch
 
   - id: 45-cfr-149
     jurisdiction: federal
@@ -139,20 +140,25 @@ federal:
   - id: cms-idr-guidance-disputing-parties
     jurisdiction: federal
     kind: guidance
-    citation: "CMS, Federal Independent Dispute Resolution (IDR) Process Guidance for Disputing Parties (Dec. 2023)"
+    citation: "CMS, Federal Independent Dispute Resolution (IDR) Process Guidance
+      for Disputing Parties (Dec. 2023)"
     short: "CMS IDR Disputing Parties Guidance"
     url: "https://www.cms.gov/files/document/federal-independent-dispute-resolution-guidance-disputing-parties.pdf"
     fetcher: pdf
-    notes: "Operational guide for providers/plans on initiating and prosecuting federal IDR; covers eligibility, batching, fees, offers, info requirements."
+    notes: "Operational guide for providers/plans on initiating and prosecuting federal
+      IDR; covers eligibility, batching, fees, offers, info requirements."
 
   - id: cms-idr-guidance-idr-entities
     jurisdiction: federal
     kind: guidance
-    citation: "CMS, Federal Independent Dispute Resolution (IDR) Process Guidance for Certified IDR Entities (Dec. 2023)"
+    citation: "CMS, Federal Independent Dispute Resolution (IDR) Process Guidance
+      for Certified IDR Entities (Dec. 2023)"
     short: "CMS IDR Entities Guidance"
     url: "https://www.cms.gov/CCIIO/Resources/Regulations-and-Guidance/Downloads/Federal-Independent-Dispute-Resolution-Process-Guidance-for-Certified-IDR-Entities.pdf?stream=top"
     fetcher: pdf
-    notes: "Companion guide to disputing-parties guidance; explains how arbitrators select offers, weight QPA, evaluate credibility factors. Critical for understanding what wins."
+    notes: "Companion guide to disputing-parties guidance; explains how arbitrators
+      select offers, weight QPA, evaluate credibility factors. Critical for understanding
+      what wins."
 
 states:
   illinois:
@@ -162,8 +168,10 @@ states:
       citation: "215 ILCS 124 (Network Adequacy and Transparency Act)"
       short: "215 ILCS 124"
       url: "https://www.ilga.gov/legislation/ilcs/ilcs3.asp?ActID=3824&ChapterID=22"
-      fetcher: html
-      notes: "Primary IL statute for network adequacy and consumer protection. IL does not have a stand-alone surprise-billing statute beyond this; balance billing in IL is governed primarily by federal NSA."
+      fetcher: web_fetch
+      notes: "Primary IL statute for network adequacy and consumer protection. IL
+        does not have a stand-alone surprise-billing statute beyond this; balance
+        billing in IL is governed primarily by federal NSA."
 
     - id: il-215-ilcs-124-10
       jurisdiction: IL
@@ -171,15 +179,16 @@ states:
       citation: "215 ILCS 124/10 (Network Adequacy requirements)"
       short: "215 ILCS 124/10"
       url: "https://ilga.gov/legislation/ilcs/documents/021501240K10.htm"
-      fetcher: html
+      fetcher: web_fetch
 
     - id: il-public-act-102-901
       jurisdiction: IL
       kind: statute
-      citation: "Illinois Public Act 102-0901 (Network Adequacy and Transparency Act amendments)"
+      citation: "Illinois Public Act 102-0901 (Network Adequacy and Transparency Act
+        amendments)"
       short: "IL P.A. 102-0901"
       url: "https://www.ilga.gov/legislation/publicacts/fulltext.asp?Name=102-0901"
-      fetcher: html
+      fetcher: web_fetch
       notes: "Conforms IL law to federal NSA; amends 215 ILCS 124."
 
   california:
@@ -222,7 +231,8 @@ states:
     - id: ny-fsl-article-6
       jurisdiction: NY
       kind: statute
-      citation: "N.Y. Financial Services Law Article 6 (Emergency Medical Services and Surprise Bills)"
+      citation: "N.Y. Financial Services Law Article 6 (Emergency Medical Services
+        and Surprise Bills)"
       short: "NY FSL Art. 6"
       url: "https://newyork.public.law/laws/n.y._financial_services_law_article_6"
       fetcher: html
@@ -280,10 +290,11 @@ states:
     - id: nj-26-2ss
       jurisdiction: NJ
       kind: statute
-      citation: "N.J.S.A. 26:2SS-1 et seq. (Out-of-network Consumer Protection, Transparency, Cost Containment and Accountability Act)"
+      citation: "N.J.S.A. 26:2SS-1 et seq. (Out-of-network Consumer Protection, Transparency,
+        Cost Containment and Accountability Act)"
       short: "N.J.S.A. 26:2SS"
       url: "https://www.njleg.state.nj.us/2018/Bills/PL18/32_.HTM"
-      fetcher: html
+      fetcher: web_fetch
       notes: "P.L.2018, c.32 - NJ surprise billing law; includes arbitration framework."
 
   florida:
@@ -324,4 +335,5 @@ states:
       short: "TN summary"
       url: "local:corpus/states/tennessee/tn-summary.txt"
       fetcher: skip
-      notes: "Hand-maintained reference; TN providers are governed primarily by federal NSA."
+      notes: "Hand-maintained reference; TN providers are governed primarily by federal
+        NSA."

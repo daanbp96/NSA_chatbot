@@ -1,15 +1,20 @@
-"""Source fetchers: ``fetch_ecfr``, ``fetch_html``, ``fetch_pdf``.
+"""Source fetchers: ``fetch_ecfr``, ``fetch_html``, ``fetch_pdf``,
+``fetch_via_anthropic``.
 
 These are thin orchestrators around HTTP + format-specific parsers in
 :mod:`nsa_chatbot.ingest.formats`. Each raises :class:`IngestError` on failure;
-the orchestrator catches and records the reason per source.
+the orchestrator catches and records the reason per source. ``fetch_via_anthropic``
+fetches through Anthropic's server-side ``web_fetch`` — used as a fallback for
+hosts the local network can't reach.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from dataclasses import dataclass
 
+import anthropic
 import requests
 from tenacity import (
     retry,
@@ -18,6 +23,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from nsa_chatbot.config import REWRITE_MODEL_ANTHROPIC
 from nsa_chatbot.ingest.formats.ecfr import parse_ecfr_xml
 from nsa_chatbot.ingest.formats.html_pages import extract_html
 from nsa_chatbot.ingest.formats.pdf import extract_pdf
@@ -41,7 +47,7 @@ class FetchedDoc:
 
 
 def _now_iso() -> str:
-    return _dt.datetime.utcnow().isoformat() + "Z"
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 
 @retry(
@@ -77,6 +83,29 @@ def _ecfr_latest_issue_date(title: int) -> str | None:
         if t.get("number") == title:
             return t.get("up_to_date_as_of") or t.get("latest_issue_date")
     return None
+
+
+# eCFR human-facing URLs encode the structured fields the Versioner API needs,
+# e.g. .../title-45/.../part-149/.../section-149.110 → title 45, part 149,
+# section_prefix "149.110". The discovery agent proposes eCFR sources by URL, so
+# parse those out rather than requiring it to also supply title/part by hand.
+_ECFR_TITLE = re.compile(r"/title-(\d+)")
+_ECFR_PART = re.compile(r"/part-(\d+)")
+_ECFR_SECTION = re.compile(r"/section-([\d.]+)")
+
+
+def parse_ecfr_url(url: str | None) -> tuple[int, int, str | None] | None:
+    """Extract ``(title, part, section_prefix)`` from an ecfr.gov URL, or ``None``
+    if it isn't a parseable eCFR URL (missing title or part)."""
+    if not url or "ecfr.gov" not in url:
+        return None
+    t = _ECFR_TITLE.search(url)
+    p = _ECFR_PART.search(url)
+    if not (t and p):
+        return None
+    s = _ECFR_SECTION.search(url)
+    section = s.group(1).rstrip(".") if s else None
+    return int(t.group(1)), int(p.group(1)), section
 
 
 def fetch_ecfr(
@@ -139,3 +168,47 @@ def fetch_pdf(url: str) -> FetchedDoc:
 
     text = extract_pdf(resp.content, url=url)
     return FetchedDoc(text=text, fetched_at=_now_iso(), source_url=url)
+
+
+# ---------- Anthropic web_fetch fallback ------------------------------------
+
+
+def is_connection_error(exc: Exception) -> bool:
+    """True if ``exc`` was caused by a failure to *connect* (timeout / refused)
+    — i.e. the host is unreachable, not a 404/parse error. Used to decide
+    whether to fall back to ``fetch_via_anthropic``.
+    """
+    return isinstance(exc.__cause__, (requests.ConnectionError, requests.Timeout))
+
+
+def fetch_via_anthropic(url: str) -> FetchedDoc:
+    """Fetch a URL through Anthropic's server-side ``web_fetch`` tool — runs on
+    Anthropic's network, so it reaches hosts the local client can't. Pulls the
+    raw fetched text out of the ``web_fetch_tool_result`` block.
+    """
+    client = anthropic.Anthropic()
+    resp = client.messages.create(
+        model=REWRITE_MODEL_ANTHROPIC,
+        max_tokens=128,
+        tools=[{
+            "type": "web_fetch_20260209",
+            "name": "web_fetch",
+            "max_uses": 1,
+            "allowed_callers": ["direct"],
+        }],
+        extra_headers={"anthropic-beta": "web-fetch-2025-09-10"},
+        messages=[{"role": "user", "content": f"Fetch {url}"}],
+    )
+    for block in resp.content:
+        b = block.model_dump() if hasattr(block, "model_dump") else block
+        if b.get("type") != "web_fetch_tool_result":
+            continue
+        result = b.get("content") or {}
+        if result.get("type") == "web_fetch_result":
+            data = (((result.get("content") or {}).get("source")) or {}).get("data")
+            if data and data.strip():
+                return FetchedDoc(text=data, fetched_at=_now_iso(), source_url=url)
+        raise IngestError(
+            f"web_fetch failed for {url}: {result.get('error_code') or result.get('type')}"
+        )
+    raise IngestError(f"web_fetch returned no result for {url}")

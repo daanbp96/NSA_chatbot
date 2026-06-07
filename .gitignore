@@ -16,3 +16,6 @@ index/
 .DS_Store
 .vscode/*.log
 .vscode/
+
+# Local agent state (Claude Code settings, locks)
+.claude/

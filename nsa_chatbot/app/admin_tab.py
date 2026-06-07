@@ -1,107 +1,73 @@
-"""Admin tab: operator controls — live index stats + buttons to run the
-corpus pipeline (ingest + rebuild) without touching the terminal.
+"""Source overview tab: a read-only view of the corpus registry.
+
+Shows how many **sources** are declared and how many are actually indexed (per
+jurisdiction), plus a per-source table of fetched/indexed status. It deliberately
+does NOT report chunk counts or expose operator buttons — discovery, fetch +
+rebuild, and the search-domain whitelist all live on the Add-source tab.
 """
 
 from __future__ import annotations
 
+from collections import Counter
+
 import gradio as gr
 
-from nsa_chatbot.ingest.run import ingest
-from nsa_chatbot.store.index import build_index, stats
+from nsa_chatbot.ingest.registry import source_overview
+from nsa_chatbot.store.index import chunk_counts_by_source
 
 
-def stats_fn() -> str:
-    """Render current index stats as markdown."""
-    s = stats()
-    if "error" in s:
-        return f"_No index yet:_ `{s['error']}`. Run ingest and rebuild."
-    lines = [f"**Total chunks:** {s['count']}", "", "**By jurisdiction:**"]
-    for j, n in sorted(s["jurisdictions"].items()):
-        lines.append(f"- `{j}`: {n}")
-    return "\n".join(lines)
+def source_overview_fn() -> str:
+    """Render source counts + a per-source fetched/indexed table (no chunks)."""
+    rows = source_overview()
+    counts = chunk_counts_by_source()  # used only as an "is it indexed?" signal
 
+    def is_indexed(rid: str) -> bool:
+        return counts.get(rid, 0) > 0
 
-def ingest_fn(only_ids_text: str) -> str:
-    """Run the ingest step. Comma-separated source ids; blank = all."""
-    only_ids: set[str] | None = None
-    if only_ids_text and only_ids_text.strip():
-        only_ids = {s.strip() for s in only_ids_text.split(",") if s.strip()}
-    try:
-        result = ingest(only_ids=only_ids)
-    except Exception as exc:
-        return f"_Ingest failed:_ `{exc}`"
+    total = len(rows)
+    indexed = sum(1 for r in rows if is_indexed(r["id"]))
+    by_jur = Counter(r["jurisdiction"] for r in rows)
 
-    label = f"`{sorted(only_ids)}`" if only_ids else "all sources in `sources.yaml`"
     lines = [
-        f"**Ingest complete** ({label}).",
+        f"**{total} sources** declared · **{indexed} indexed** "
+        f"· **{total - indexed} not yet indexed**",
         "",
-        f"- Succeeded: **{len(result.succeeded)}**",
-        f"- Failed: **{len(result.failures)}**",
-        f"- Skipped: **{len(result.skipped)}**",
+        "**Sources by jurisdiction:**",
     ]
-    if result.failures:
-        lines.append("")
-        lines.append("**Failures:**")
-        for f in result.failures:
-            lines.append(f"- `{f.source_id}` -- {f.reason}")
-    if result.warnings:
-        lines.append("")
-        lines.append("**Warnings:**")
-        for w in result.warnings:
-            lines.append(f"- {w}")
-    if result.skipped:
-        skipped_list = ", ".join(f"`{s}`" for s in result.skipped)
-        lines.append("")
-        lines.append(f"**Skipped (hand-maintained):** {skipped_list}")
-    lines.append("")
-    lines.append("_New content isn't queryable until the index is rebuilt._")
+    for j, n in sorted(by_jur.items()):
+        lines.append(f"- `{j}`: {n}")
+
+    lines += [
+        "",
+        "| source | jurisdiction | citation | fetched | indexed |",
+        "|---|---|---|---|---|",
+    ]
+    for r in rows:
+        fetched = "✓" if r["in_corpus"] else "✗"
+        if is_indexed(r["id"]):
+            ix = "✓"
+        elif r["fetcher"] == "skip":
+            ix = "✗ — hand-supply a file"  # skip = never auto-fetched
+        else:
+            ix = "✗ ⚠️"  # declared but not indexed → needs fetch + rebuild
+        lines.append(
+            f"| `{r['id']}` | {r['jurisdiction']} | {r.get('citation') or '?'} "
+            f"| {fetched} | {ix} |"
+        )
     return "\n".join(lines)
-
-
-def build_fn() -> str:
-    """Re-chunk corpus and rebuild the Chroma index. Costs embedding API calls."""
-    try:
-        n = build_index()
-    except Exception as exc:
-        return f"_Build failed:_ `{exc}`"
-    return f"Index rebuilt with **{n}** chunks."
 
 
 def build_admin_tab() -> gr.Markdown:
-    """Create and wire the Admin tab. Returns the status markdown component so
-    the caller can hook it to ``demo.load`` for an initial stats render.
+    """Create the Source-overview tab. Returns the overview markdown component so
+    the caller can hook it to ``demo.load`` for an initial render.
     """
-    gr.Markdown("### Index status")
-    status_md = gr.Markdown()
+    gr.Markdown("### Source overview")
+    gr.Markdown(
+        "_Every source declared in `sources.yaml`: whether it's been fetched to "
+        "`corpus/` and indexed for retrieval. **⚠️ = declared but not indexed** "
+        "(add via the Add-source tab, then Fetch + rebuild there)._"
+    )
+    overview_md = gr.Markdown(source_overview_fn())
     refresh_btn = gr.Button("Refresh", size="sm")
-
-    gr.Markdown("---")
-    gr.Markdown("### Ingest sources")
-    gr.Markdown(
-        "_Fetches sources declared in `sources.yaml`, writes "
-        "plain-text files under `corpus/`. Safe to re-run — files "
-        "are overwritten in place._"
-    )
-    only_input = gr.Textbox(
-        label="Source IDs",
-        placeholder="leave blank for all, or e.g. 45-cfr-149, cms-idr-tips",
-    )
-    ingest_btn = gr.Button("Run ingest", variant="primary")
-    ingest_md = gr.Markdown()
-
-    gr.Markdown("---")
-    gr.Markdown("### Rebuild index")
-    gr.Markdown(
-        "_Re-chunks everything in `corpus/`, re-embeds, replaces "
-        "the Chroma collection. Costs OpenAI embedding tokens "
-        "(~$0.01 per ~200 chunks)._"
-    )
-    build_btn = gr.Button("Rebuild index", variant="primary")
-    build_md = gr.Markdown()
-
-    # Wiring
-    refresh_btn.click(stats_fn, outputs=status_md)
-    ingest_btn.click(ingest_fn, inputs=only_input, outputs=ingest_md)
-    build_btn.click(build_fn, outputs=build_md).then(stats_fn, outputs=status_md)
-
-    return status_md
+    refresh_btn.click(source_overview_fn, outputs=overview_md)
+    return overview_md

@@ -14,7 +14,15 @@ from pathlib import Path
 import yaml
 
 from nsa_chatbot.config import CORPUS_DIR, SOURCES_YAML
-from nsa_chatbot.ingest.fetcher import FetchedDoc, fetch_ecfr, fetch_html, fetch_pdf
+from nsa_chatbot.ingest.fetcher import (
+    FetchedDoc,
+    fetch_ecfr,
+    fetch_html,
+    fetch_pdf,
+    fetch_via_anthropic,
+    is_connection_error,
+    parse_ecfr_url,
+)
 from nsa_chatbot.ingest.schemas import (
     Frontmatter,
     IngestError,
@@ -53,24 +61,67 @@ def _fetch_one(source: SourceSpec) -> FetchedDoc | None:
     """
     fetcher = source.fetcher or "html"
     if fetcher == "ecfr":
-        if source.title is None or source.part is None:
-            raise IngestError("ecfr source missing title/part")
-        return fetch_ecfr(
-            title=source.title,
-            part=source.part,
-            section_prefix=source.section_prefix,
-        )
+        title, part, section_prefix = source.title, source.part, source.section_prefix
+        # The discovery agent proposes eCFR sources by URL without the structured
+        # title/part the Versioner API needs — derive them from the URL.
+        if (title is None or part is None) and source.url:
+            parsed = parse_ecfr_url(source.url)
+            if parsed:
+                title, part, url_section = parsed
+                section_prefix = section_prefix or url_section
+        if title is None or part is None:
+            raise IngestError(
+                "ecfr source needs title/part (or an ecfr.gov URL to derive them from)"
+            )
+        return fetch_ecfr(title=title, part=part, section_prefix=section_prefix)
     if fetcher == "html":
         if not source.url:
             raise IngestError("html source missing url")
-        return fetch_html(source.url)
+        return _local_or_web_fetch(fetch_html, source.url)
     if fetcher == "pdf":
         if not source.url:
             raise IngestError("pdf source missing url")
-        return fetch_pdf(source.url)
+        return _local_or_web_fetch(fetch_pdf, source.url)
+    if fetcher == "web_fetch":
+        if not source.url:
+            raise IngestError("web_fetch source missing url")
+        return fetch_via_anthropic(source.url)
     if fetcher == "skip":
         return None
     raise IngestError(f"unknown fetcher {fetcher!r}")
+
+
+def _local_or_web_fetch(local_fetch, url: str) -> FetchedDoc:
+    """Local fetch first; on a connection failure (host unreachable), fall back
+    to Anthropic's server-side web_fetch. Genuine errors (404/parse) still raise.
+    """
+    try:
+        return local_fetch(url)
+    except IngestError as exc:
+        if is_connection_error(exc):
+            return fetch_via_anthropic(url)
+        raise
+
+
+def preview_source(entry: dict, max_chars: int = 4000) -> str:
+    """Fetch a proposed source and return the head of the extracted text — so a
+    reviewer sees what would actually land in the corpus *before* approving.
+    Reuses the same fetch dispatch as ingest; returns a bracketed message on
+    failure (e.g. unreachable host) instead of raising.
+    """
+    try:
+        spec = SourceSpec.from_dict(entry)
+        doc = _fetch_one(spec)
+    except IngestError as exc:
+        return f"[could not fetch: {exc}]"
+    except Exception as exc:
+        return f"[fetch error: {exc}]"
+    if doc is None:
+        return "[fetcher: skip — nothing to fetch/preview]"
+    text = doc.text.strip()
+    prefix = f"[warning: {doc.warning}]\n\n" if doc.warning else ""
+    suffix = f"\n\n… ({len(text)} chars total)" if len(text) > max_chars else ""
+    return prefix + text[:max_chars] + suffix
 
 
 def ingest(only_ids: set[str] | None = None) -> IngestResult:
