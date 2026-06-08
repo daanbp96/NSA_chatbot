@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import shutil
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import chromadb
@@ -52,9 +52,14 @@ def _batched(it: Iterable, n: int) -> Iterable[list]:
 
 
 def build_index(
-    corpus_dir: Path = CORPUS_DIR, embedder: Embedder | None = None
+    corpus_dir: Path = CORPUS_DIR,
+    embedder: Embedder | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> int:
     """Re-build the Chroma index from scratch. Returns chunk count.
+
+    ``on_progress(done, total)`` is called after each embedded batch, for a UI
+    progress bar.
 
     Order matters:
       1. ``delete_collection`` -- clears Chroma's *in-memory* collection
@@ -88,17 +93,22 @@ def build_index(
         metadata={"embedder": embedder.model_id},
     )
 
-    total = 0
-    for batch in _batched(chunk_corpus(corpus_dir), 64):
+    # Materialize so we know the total upfront (for the progress callback);
+    # the corpus is small enough that holding it in memory is fine.
+    chunks = list(chunk_corpus(corpus_dir))
+    total = len(chunks)
+    done = 0
+    for batch in _batched(iter(chunks), 64):
         texts = [c.text for c in batch]
-        embeddings = embedder.embed(texts)
         coll.add(
             ids=[c.chunk_id for c in batch],
             documents=texts,
             metadatas=[c.metadata.to_chroma() for c in batch],
-            embeddings=embeddings,
+            embeddings=embedder.embed(texts),
         )
-        total += len(batch)
+        done += len(batch)
+        if on_progress:
+            on_progress(done, total)
 
     return total
 

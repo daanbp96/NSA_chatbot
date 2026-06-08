@@ -11,7 +11,7 @@ import gradio as gr
 
 from nsa_chatbot.ingest.discover import discover
 from nsa_chatbot.ingest.domains import add_domain, read_domains, remove_domain
-from nsa_chatbot.ingest.registry import append_source
+from nsa_chatbot.ingest.registry import append_source, source_overview
 from nsa_chatbot.ingest.run import ingest, preview_source
 from nsa_chatbot.store.index import build_index
 
@@ -140,32 +140,55 @@ def approve_fn(proposals: list[dict]):
     return "\n".join(lines), _NONE, [], _proposal_dropdown([])
 
 
-def preview_fn(proposals: list[dict], selected_id: str | None) -> str:
+def preview_fn(proposals: list[dict], selected_id: str | None):
     """Fetch-preview a single proposal (the one picked in the dropdown, or the
-    first if none selected), so multiple proposals don't crowd into one blob."""
+    first if none selected). A generator so the box shows a placeholder the
+    instant it's clicked — fetching + parsing a source can take a few seconds
+    (and longer for slow or unreachable sites)."""
     if not proposals:
-        return "(nothing to preview)"
+        yield "(nothing to preview)"
+        return
     chosen = next((p for p in proposals if p.get("id") == selected_id), proposals[0])
+    cid = chosen.get("id")
+    yield (
+        f"⏳ Fetching & parsing {cid}…\n"
+        "(some state sites are slow or unreachable; this can take a few seconds)"
+    )
     head = preview_source(chosen)
-    return f"### {chosen.get('id')} — {chosen.get('url', '(no url)')}\n{head}"
+    yield f"### {cid} — {chosen.get('url', '(no url)')}\n{head}"
 
 
 def dismiss_fn():
     return "_Dismissed._", _NONE, [], _proposal_dropdown([])
 
 
-def rebuild_fn() -> str:
+def rebuild_fn(refetch_all: bool, progress=gr.Progress()) -> str:
+    """Fetch sources + rebuild the index, with a live progress bar. By default
+    fetches only sources missing from the corpus (the ones you just added);
+    tick *Re-fetch all* to re-download everything (e.g. to pick up upstream edits).
+    The index is always rebuilt wholesale from the corpus on disk.
+    """
     try:
-        r = ingest()
-        n = build_index()
+        only = None if refetch_all else {
+            r["id"] for r in source_overview() if not r["in_corpus"]
+        }
+        progress(0, desc="Fetching sources…")
+        r = ingest(
+            only_ids=only,
+            on_progress=lambda i, n, sid: progress((i, n), desc=f"Fetching {sid}"),
+        )
+        count = build_index(
+            on_progress=lambda done, n: progress((done, n), desc="Embedding + indexing"),
+        )
     except Exception as exc:
         return f"_Rebuild failed:_ `{exc}`"
     note = ""
     if r.failures:
-        note = " _(some sources failed to fetch — see Admin for details)_"
+        note = " _(some sources failed to fetch — see Source overview for details)_"
+    scope = "all sources" if refetch_all else "new/missing sources"
     return (
-        f"Ingest: **{len(r.succeeded)}** ok, **{len(r.failures)}** failed, "
-        f"**{len(r.skipped)}** skipped. Index rebuilt with **{n}** chunks.{note}"
+        f"Fetched {scope}: **{len(r.succeeded)}** ok, **{len(r.failures)}** failed, "
+        f"**{len(r.skipped)}** skipped. Index rebuilt with **{count}** chunks.{note}"
     )
 
 
@@ -207,6 +230,10 @@ def build_discover_tab() -> None:
     status = gr.Markdown()
 
     gr.Markdown("---")
+    refetch_all = gr.Checkbox(
+        value=False,
+        label="Re-fetch all sources (default: only new/missing ones)",
+    )
     rebuild = gr.Button("Fetch + rebuild index")
     rebuild_status = gr.Markdown()
 
@@ -250,16 +277,18 @@ def build_discover_tab() -> None:
             outputs=[chatbot, agent_state, proposals_md, pending, preview_select],
         )
 
-    preview.click(preview_fn, [pending, preview_select], [preview_code]).then(
-        lambda: gr.update(open=True), outputs=preview_acc
-    )
+    # Open the accordion instantly (queue=False), then stream the placeholder →
+    # parsed text, so the click feels responsive even on a slow fetch.
+    preview.click(
+        lambda: gr.update(open=True), outputs=preview_acc, queue=False
+    ).then(preview_fn, [pending, preview_select], [preview_code])
     approve.click(approve_fn, [pending], [status, proposals_md, pending, preview_select])
     dismiss.click(dismiss_fn, None, [status, proposals_md, pending, preview_select])
     clear.click(
         lambda: ([], [], _NONE, [], gr.update(choices=[], value=None)),
         outputs=[chatbot, agent_state, proposals_md, pending, preview_select],
     )
-    rebuild.click(rebuild_fn, None, [rebuild_status])
+    rebuild.click(rebuild_fn, [refetch_all], [rebuild_status])
 
     add_domain_btn.click(
         _domain_add, inputs=domain_input, outputs=[domains_group, domain_input, domain_status]

@@ -18,7 +18,7 @@ import anthropic
 import requests
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -34,8 +34,20 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+# (connect, read): a short connect timeout so an unreachable host (e.g. ilga.gov)
+# fails in seconds and the web_fetch fallback kicks in, instead of hanging.
+CONNECT_TIMEOUT = 5
 TIMEOUT = 30
 SHORT_BODY_THRESHOLD = 200
+
+
+def _retryable(exc: BaseException) -> bool:
+    """Retry transient HTTP failures (read timeouts, 5xx), but NOT a failure to
+    *connect* — an unreachable host won't recover on retry; retrying just delays
+    the web_fetch fallback by the full backoff (~90s for nothing)."""
+    return isinstance(exc, requests.RequestException) and not isinstance(
+        exc, requests.ConnectionError
+    )
 
 
 @dataclass
@@ -51,14 +63,16 @@ def _now_iso() -> str:
 
 
 @retry(
-    retry=retry_if_exception_type(requests.RequestException),
+    retry=retry_if_exception(_retryable),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
     reraise=True,
 )
 def _get(url: str, **kwargs) -> requests.Response:
     headers = {"User-Agent": USER_AGENT, **kwargs.pop("headers", {})}
-    resp = requests.get(url, headers=headers, timeout=TIMEOUT, **kwargs)
+    resp = requests.get(
+        url, headers=headers, timeout=(CONNECT_TIMEOUT, TIMEOUT), **kwargs
+    )
     resp.raise_for_status()
     return resp
 

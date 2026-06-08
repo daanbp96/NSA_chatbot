@@ -9,6 +9,7 @@ per-source failure reasons.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -124,11 +125,16 @@ def preview_source(entry: dict, max_chars: int = 4000) -> str:
     return prefix + text[:max_chars] + suffix
 
 
-def ingest(only_ids: set[str] | None = None) -> IngestResult:
+def ingest(
+    only_ids: set[str] | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> IngestResult:
     """Fetch every source in ``sources.yaml`` (or the ``only_ids`` subset).
 
-    Returns an :class:`IngestResult` summarising successes, failures (each
-    with the reason), and non-fatal warnings (e.g. suspiciously thin HTML).
+    ``on_progress(done, total, source_id)`` is called once per source before it
+    is fetched, for a UI progress bar. Returns an :class:`IngestResult`
+    summarising successes, failures (each with the reason), and non-fatal
+    warnings (e.g. suspiciously thin HTML).
     """
     with SOURCES_YAML.open() as fh:
         cfg = yaml.safe_load(fh) or {}
@@ -143,11 +149,14 @@ def ingest(only_ids: set[str] | None = None) -> IngestResult:
             todo.append(
                 (CORPUS_DIR / "states" / state / f"{source.id}.txt", source)
             )
+    if only_ids is not None:
+        todo = [(p, s) for p, s in todo if s.id in only_ids]
 
     result = IngestResult()
-    for path, source in todo:
-        if only_ids and source.id not in only_ids:
-            continue
+    total = len(todo)
+    for i, (path, source) in enumerate(todo, start=1):
+        if on_progress:
+            on_progress(i, total, source.id)
         try:
             doc = _fetch_one(source)
             if doc is None:

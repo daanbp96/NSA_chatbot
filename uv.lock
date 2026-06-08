@@ -1,6 +1,4 @@
-user: hallo
-
-assistant: Hello! 👋 I'm the Clearest Health assistant. I'm here to help answer questions about the federal No Surprises Act and state surprise-billing laws in Illinois, California, New York, New Jersey, Florida, and Tennessee. What can I help you with?version = 1
+version = 1
 revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
