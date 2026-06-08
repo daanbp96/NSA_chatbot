@@ -60,15 +60,17 @@ class SourceSpec:
 
 @dataclass
 class Frontmatter:
-    """YAML frontmatter block at the top of a corpus file."""
+    """YAML frontmatter block at the top of a corpus file. Fields default so a
+    file with missing/partial frontmatter (e.g. a hand-supplied source) doesn't
+    crash chunking; ``_write_doc`` always supplies them fully."""
 
-    id: str
-    jurisdiction: str
-    kind: str
-    citation: str
-    short: str
-    source_url: str
-    fetched_at: str
+    id: str = ""
+    jurisdiction: str = "unknown"
+    kind: str = "unknown"
+    citation: str = ""
+    short: str = ""
+    source_url: str = ""
+    fetched_at: str = ""
     notes: str | None = None
 
     def to_yaml_dict(self) -> dict:
@@ -78,19 +80,7 @@ class Frontmatter:
     @classmethod
     def from_dict(cls, data: dict) -> Frontmatter:
         known = {f.name for f in fields(cls)}
-        # Preserve robustness: missing fields default to "" so a partial
-        # frontmatter doesn't crash chunking.
-        defaults = {
-            "id": "",
-            "jurisdiction": "unknown",
-            "kind": "unknown",
-            "citation": "",
-            "short": "",
-            "source_url": "",
-            "fetched_at": "",
-        }
-        merged = {**defaults, **{k: v for k, v in (data or {}).items() if k in known}}
-        return cls(**merged)
+        return cls(**{k: v for k, v in (data or {}).items() if k in known})
 
 
 @dataclass

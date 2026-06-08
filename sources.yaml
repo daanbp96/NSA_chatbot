@@ -224,6 +224,17 @@ states:
       url: "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=INS&sectionNum=10112.82."
       fetcher: html
 
+    - id: ca-ab72-2016
+      jurisdiction: CA
+      kind: statute
+      citation: Cal. AB 72 (2015–2016 Reg. Sess.), approved Sept. 23, 2016
+      short: CA AB 72 (2016) – Out-of-Network Billing Enrolled Bill
+      fetcher: html
+      url: 
+        https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=201520160AB72
+      notes: Enrolled bill text for AB 72, which added HSC §§ 1371.30, 1371.31, 
+        1371.9 and Ins. Code §§ 10112.8, 10112.81, 10112.82. Primary legislative
+        source for CA surprise billing regime.
   new-york:
     # NY's official nysenate.gov blocks programmatic clients with 403, so we
     # use newyork.public.law (a third-party but accurate mirror that pulls

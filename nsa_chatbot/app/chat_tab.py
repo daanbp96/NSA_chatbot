@@ -1,10 +1,15 @@
 """Chat tab: user-facing Q&A wired to the retrieval pipeline.
 
-Streaming chatbot + jurisdiction dropdown + a foldable sources panel, plus a
-**jurisdiction guard**: if the question names a state that disagrees with the
-dropdown, the bot asks which to use; if the chosen state has no coverage, it
-refuses and offers a federal-only answer. The pending clarification is carried
-across turns in a ``gr.State`` (the chat is otherwise stateless).
+Streaming chatbot + jurisdiction dropdown, plus a **jurisdiction guard**: if the
+question names a state that disagrees with the dropdown, the bot asks which to
+use; if the chosen state has no coverage, it refuses and offers a federal-only
+answer. The pending clarification is carried across turns in a ``gr.State`` (the
+chat is otherwise stateless).
+
+Used sources are folded into each assistant message as a collapsible
+``<details>`` block (built from the ``("sources", footer)`` event the pipeline
+emits at the end of generation), so every answer carries its own provenance and
+scrollback shows what grounded each earlier turn.
 """
 
 from __future__ import annotations
@@ -68,13 +73,30 @@ def _resolve_fresh(detected: set[str], dd: str | None):
     return ("conflict", None)  # 2+ states named
 
 
+def _sources_block(footer: str) -> str:
+    """Wrap the pipeline's ``[S#]`` footer in a collapsible block appended to the
+    answer text, so each assistant message carries its own provenance. The footer
+    goes in a fenced code block (monospaced, and keeps ``[S#]`` from being read as
+    broken markdown links). Empty footer → nothing appended.
+    """
+    if not footer.strip():
+        return ""
+    n = sum(1 for ln in footer.splitlines() if ln.strip())
+    label = "Source" if n == 1 else "Sources"
+    return (
+        f"\n\n<details><summary>{label} ({n})</summary>\n\n"
+        f"```\n{footer}\n```\n\n</details>"
+    )
+
+
 def _stream_answer(
-    history: list[dict], question: str, effective: str | None, box: dict,
+    history: list[dict], question: str, effective: str | None,
     difficulty: str = "simple",
 ):
-    """Shared tail: retrieve → coverage gate → stream. Yields (history, sources,
-    pending) tuples. Sets pending only to ask the federal-fallback question.
-    ``difficulty`` ("simple"/"hard") selects the tiered answer model.
+    """Shared tail: retrieve → coverage gate → stream. Yields (history, pending)
+    tuples; the sources footer is appended onto the assistant message inline.
+    Sets pending only to ask the federal-fallback question. ``difficulty``
+    ("simple"/"hard") selects the tiered answer model.
     """
     try:
         if effective and effective != "federal":
@@ -90,30 +112,32 @@ def _stream_answer(
                         f"I didn't find {name}-specific material for that question. "
                         f"Answer based on **federal** law instead? (yes/no)"
                     )
-                    yield history, box["sources"], {"kind": "offer_federal", "question": question}
+                    yield history, {"kind": "offer_federal", "question": question}
                     return
                 history[-1]["content"] = "I don't have that in my corpus."
-                yield history, box["sources"], None
+                yield history, None
                 return
             chunks = state_chunks + federal_chunks  # state first (SYSTEM_PROMPT rule 3)
         else:
             chunks = retrieve(question, jurisdiction=effective)
             if not chunks:
                 history[-1]["content"] = "I don't have that in my corpus."
-                yield history, box["sources"], None
+                yield history, None
                 return
     except CollectionNotFoundError:
         history[-1]["content"] = (
             "_The corpus pipeline (ingest → build) needs to run before the "
             "chat can answer. Open the Admin tab._"
         )
-        yield history, box["sources"], None
+        yield history, None
         return
     except Exception as exc:
         history[-1]["content"] = f"_Error:_ {exc}"
-        yield history, box["sources"], None
+        yield history, None
         return
 
+    answer = ""
+    progress = ""
     try:
         for kind, payload in answer_agentic(
             question, jurisdiction=effective, seed_chunks=chunks, difficulty=difficulty
@@ -121,39 +145,39 @@ def _stream_answer(
             if kind == "progress":
                 # Show "searching…" notes while the model gathers sources; the
                 # first answer token replaces them.
-                box["progress"] = (
-                    f"{box['progress']}\n{payload}" if box["progress"] else payload
-                )
-                history[-1]["content"] = box["progress"]
-                yield history, box["sources"], None
+                progress = f"{progress}\n{payload}" if progress else payload
+                history[-1]["content"] = progress
+                yield history, None
             elif kind == "token":
-                box["answer"] += payload
-                history[-1]["content"] = box["answer"]
-                yield history, box["sources"], None
+                answer += payload
+                history[-1]["content"] = answer
+                yield history, None
             elif kind == "sources":
-                box["sources"] = payload
-                yield history, box["sources"], None
+                # Final event: fold the [S#] footer into this answer as a
+                # collapsible block, so the provenance travels with the message.
+                history[-1]["content"] = answer + _sources_block(payload)
+                yield history, None
     except Exception as exc:
         # Append under the partial answer instead of clobbering it.
         note = f"_Error:_ {exc}"
-        history[-1]["content"] = f"{box['answer']}\n\n{note}" if box["answer"] else note
-        yield history, box["sources"], None
+        history[-1]["content"] = f"{answer}\n\n{note}" if answer else note
+        yield history, None
 
 
 def chat_fn(message: str, history: list[dict], state: str, pending: dict | None):
     """Stream the answer, mediated by the jurisdiction guard. Yields
-    (history, sources, pending); ``pending`` carries a clarification across turns.
+    (history, pending); ``pending`` carries a clarification across turns. Used
+    sources are appended into each assistant message, not a separate output.
     """
     message = (message or "").strip()
     if not message:
-        yield history, "", pending  # keep any pending clarification
+        yield history, pending  # keep any pending clarification
         return
 
     prior = history  # turns before this message — used for follow-up rewriting
     history = history + [{"role": "user", "content": message}]
-    yield history, "", pending
+    yield history, pending
     history = history + [{"role": "assistant", "content": ""}]
-    box = {"answer": "", "sources": "", "progress": ""}
 
     # 1. Resolve a clarification asked on the previous turn.
     if pending and pending.get("kind") == "conflict":
@@ -161,7 +185,7 @@ def chat_fn(message: str, history: list[dict], state: str, pending: dict | None)
         if choice is not None:
             effective = None if choice == "all" else choice
             # A conflict is inherently multi-jurisdiction → treat as hard.
-            yield from _stream_answer(history, pending["question"], effective, box, "hard")
+            yield from _stream_answer(history, pending["question"], effective, "hard")
             return
         pending = None  # unreadable → treat this message as a fresh question
     elif pending and pending.get("kind") == "offer_federal":
@@ -173,12 +197,12 @@ def chat_fn(message: str, history: list[dict], state: str, pending: dict | None)
                 "Answer under federal law (the No Surprises Act) only, ignoring "
                 f"state-specific rules: {pending['question']}"
             )
-            yield from _stream_answer(history, fed_q, "federal", box, "simple")
+            yield from _stream_answer(history, fed_q, "federal", "simple")
         else:
             history[-1]["content"] = (
                 "Okay — rephrase, or pick a jurisdiction from the selector, whenever you like."
             )
-            yield history, "", None
+            yield history, None
         return
 
     # 2. Front router: a cheap Haiku call decides whether this is small talk /
@@ -188,7 +212,7 @@ def chat_fn(message: str, history: list[dict], state: str, pending: dict | None)
     routed = route(message, prior)
     if routed.route == "conversational":
         history[-1]["content"] = routed.reply
-        yield history, "", None
+        yield history, None
         return
 
     # 3. Legal question. Rewrite a follow-up into a standalone query using prior
@@ -217,10 +241,10 @@ def chat_fn(message: str, history: list[dict], state: str, pending: dict | None)
                 f"{_label(dd)}. Which should I use — reply \"{x}\" or \"{dd}\"?"
             )
         history[-1]["content"] = ask
-        yield history, "", {"kind": "conflict", "question": question}
+        yield history, {"kind": "conflict", "question": question}
         return
 
-    yield from _stream_answer(history, question, effective, box, difficulty)
+    yield from _stream_answer(history, question, effective, difficulty)
 
 
 def build_chat_tab() -> None:
@@ -244,9 +268,6 @@ def build_chat_tab() -> None:
         send = gr.Button("Send", variant="primary")
         clear = gr.Button("Clear")
 
-    with gr.Accordion("Sources for last answer", open=False):
-        sources = gr.Code(value="", language=None, lines=10)
-
     # Holds the just-submitted message so the visible textbox can be cleared
     # *before* the (slow, streaming) answer runs.
     sent = gr.State("")
@@ -267,7 +288,7 @@ def build_chat_tab() -> None:
         ).then(
             chat_fn,
             inputs=[sent, chatbot, state, pending],
-            outputs=[chatbot, sources, pending],
+            outputs=[chatbot, pending],
         )
 
-    clear.click(lambda: ([], "", None), outputs=[chatbot, sources, pending])
+    clear.click(lambda: ([], None), outputs=[chatbot, pending])

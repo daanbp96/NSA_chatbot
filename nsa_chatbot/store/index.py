@@ -1,9 +1,8 @@
 """Chroma-backed vector index. Local, persistent, no server required.
 
-Public functions (intended to be called from API endpoints or tests):
-  - :func:`build_index` -- drop and recreate the collection from ``./corpus``.
-  - :func:`query` -- vector search with optional metadata filter.
-  - :func:`stats` -- collection size and sample jurisdictions.
+Public surface: :func:`build_index` (drop + recreate from ``./corpus``),
+:func:`query` (vector search with optional metadata filter),
+:func:`lookup_by_citation`, :func:`stats`, and :func:`chunk_counts_by_source`.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ from nsa_chatbot.core.embedder import Embedder, get_embedder
 # importing chromadb themselves.
 __all__ = [
     "build_index", "query", "lookup_by_citation", "stats",
-    "chunk_counts_by_source", "get_collection", "CollectionNotFoundError",
+    "chunk_counts_by_source", "CollectionNotFoundError",
 ]
 
 COLLECTION = "nsa_corpus"
@@ -104,7 +103,7 @@ def build_index(
     return total
 
 
-def get_collection() -> chromadb.Collection:
+def _get_collection() -> chromadb.Collection:
     return _client().get_collection(COLLECTION)
 
 
@@ -119,7 +118,7 @@ def query(
     so an off-topic query can legitimately return an empty list.
     """
     embedder = embedder or get_embedder()
-    coll = get_collection()
+    coll = _get_collection()
     # Fail loud on an embedder mismatch. The collection records the model that
     # built it; querying with a different model embeds into an incompatible
     # vector space, which silently returns garbage (same dim) or crashes
@@ -129,7 +128,7 @@ def query(
         raise RuntimeError(
             f"Embedder mismatch: index was built with {built_with!r} but the "
             f"current embedder is {embedder.model_id!r}. Rebuild the index "
-            f"(build_index) or restore EMBEDDING_PROVIDER/EMBEDDING_MODEL."
+            f"(build_index) or restore EMBEDDING_MODEL."
         )
     [emb] = embedder.embed([text])
     res = coll.query(
@@ -166,7 +165,7 @@ def lookup_by_citation(
     """
     if not tokens:
         return []
-    coll = get_collection()
+    coll = _get_collection()
     res = coll.get(where=where or None, include=["documents", "metadatas"])
     patterns = [re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE) for t in tokens]
     tokenset = {t.lower() for t in tokens}
@@ -192,7 +191,7 @@ def stats() -> dict:
     the collection grows past tens of thousands of chunks, consider caching.
     """
     try:
-        coll = get_collection()
+        coll = _get_collection()
     except Exception as exc:
         return {"error": str(exc), "count": 0}
     count = coll.count()
@@ -204,7 +203,7 @@ def stats() -> dict:
 def chunk_counts_by_source() -> dict[str, int]:
     """Indexed chunk count per ``source_id``. Empty dict if the index is missing."""
     try:
-        coll = get_collection()
+        coll = _get_collection()
     except Exception:
         return {}
     metadatas = coll.get(include=["metadatas"]).get("metadatas") or []

@@ -32,8 +32,7 @@ SOURCE_DOMAINS_FILE = ROOT / "source_domains.txt"
 
 # --- Models -----------------------------------------------------------------
 # Answers are always Anthropic; embeddings always OpenAI (Anthropic has no
-# embeddings model). To swap to local embeddings, see CLAUDE.md — and rebuild.
-EMBEDDING_PROVIDER = "openai"
+# embeddings model). Changing EMBEDDING_MODEL requires a full index rebuild.
 EMBEDDING_MODEL = "text-embedding-3-large"
 ANSWER_MODEL_ANTHROPIC = "claude-opus-4-8"  # default LLM() model; hard-tier answers
 REWRITE_MODEL_ANTHROPIC = "claude-haiku-4-5"  # cheap follow-up query rewriting
@@ -91,6 +90,8 @@ SOURCE_DOMAINS = [
     "ecfr.gov",                    # federal CFR (eCFR)
     "uscode.house.gov",            # federal USC
     "cms.gov",                     # CMS NSA / IDR guidance
+    "govinfo.gov",                 # federal (GPO) — statutes, regs, the Register
+    "congress.gov",                # federal (USC, public laws)
     "leginfo.legislature.ca.gov",  # CA
     "nysenate.gov",                # NY
     "newyork.public.law",          # NY mirror (nysenate often 403s)
@@ -98,4 +99,12 @@ SOURCE_DOMAINS = [
     "flsenate.gov",                # FL
     "ilga.gov",                    # IL
     "njleg.state.nj.us",           # NJ
+    # State government base domains — a base domain auto-covers its subdomains
+    # (the search API rejects bare TLDs / host wildcards), so e.g. tn.gov covers
+    # advance.tn.gov where the TN code lives. tn.gov unblocks TN (the gap state).
+    "tn.gov",
+    "ca.gov",
+    "ny.gov",
+    "nj.gov",
+    "il.gov",
 ]

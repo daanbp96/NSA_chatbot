@@ -25,10 +25,6 @@ class LLM:
         # was cut off at ANSWER_MAX_TOKENS.
         self.last_stop_reason: str | None = None
 
-    @property
-    def name(self) -> str:
-        return f"anthropic:{self.model}"
-
     def complete(self, system: str, user: str, max_tokens: int = 128) -> str:
         """Non-streaming single completion — for short, internal calls like
         follow-up query rewriting. Returns the concatenated text content.
@@ -50,7 +46,6 @@ class LLM:
         *,
         max_iters: int = 3,
         max_tokens: int = 1024,
-        disable_parallel_tool_use: bool = True,
     ) -> Iterator[dict]:
         """Drive a non-streaming tool-use loop. The model issues tool calls;
         ``dispatch(name, input) -> str`` runs each and returns the text result
@@ -58,14 +53,13 @@ class LLM:
         as it happens (for progress display). Stops when the model ends its turn
         without a tool call, or after ``max_iters`` rounds of tool calls.
 
-        With ``disable_parallel_tool_use`` (default), the model issues at most one
-        tool call per round, so total tool calls are bounded by ``max_iters`` —
-        without it a single round can fan out to many parallel calls.
+        Parallel tool use is disabled, so the model issues at most one tool call
+        per round and total tool calls are bounded by ``max_iters``.
 
         Generation is intentionally *not* produced here — this loop only decides
         what to gather; a separate step writes the grounded answer.
         """
-        tool_choice = {"type": "auto", "disable_parallel_tool_use": disable_parallel_tool_use}
+        tool_choice = {"type": "auto", "disable_parallel_tool_use": True}
         messages: list[dict] = [{"role": "user", "content": user}]
         for _ in range(max_iters):
             msg = self._client.messages.create(
@@ -83,12 +77,13 @@ class LLM:
             for block in msg.content:
                 if block.type != "tool_use":
                     continue
-                yield dict(block.input) if block.input else {}
+                inp = dict(block.input or {})
+                yield inp
                 results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": dispatch(block.name, dict(block.input or {})),
+                        "content": dispatch(block.name, inp),
                     }
                 )
             messages.append({"role": "user", "content": results})

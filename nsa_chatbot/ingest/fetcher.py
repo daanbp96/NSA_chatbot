@@ -200,7 +200,7 @@ def fetch_via_anthropic(url: str) -> FetchedDoc:
         messages=[{"role": "user", "content": f"Fetch {url}"}],
     )
     for block in resp.content:
-        b = block.model_dump() if hasattr(block, "model_dump") else block
+        b = block.model_dump()
         if b.get("type") != "web_fetch_tool_result":
             continue
         result = b.get("content") or {}

@@ -7,9 +7,8 @@ each chunk can be cited back to a real provision (e.g. ``45 CFR § 149.110(a)``)
 Strategy, in order of preference:
 
 1. Split on explicit ``[SECTION § X — Y]`` markers emitted by the eCFR fetcher.
-2. Split on inline section markers like ``§ 149.110`` or ``Section 1371.9``.
-3. If a section is still too long, split on subsection markers ``(a)``, ``(1)``.
-4. Final fallback: token-window split with overlap (rare, for unstructured guidance).
+2. If a section is still too long, split on subsection markers ``(a)``, ``(1)``.
+3. Final fallback: token-window split with overlap (rare, for unstructured guidance).
 
 Format-specific regexes live in :mod:`nsa_chatbot.ingest.formats.legal_text` so the
 fetcher and chunker share one source of truth for section-marker syntax.
@@ -18,6 +17,7 @@ fetcher and chunker share one source of truth for section-marker syntax.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 
 import tiktoken
@@ -147,7 +147,7 @@ def chunk_file(path: Path) -> list[Chunk]:
         if len(_ENC.encode(full_text)) <= CHUNK_TARGET_TOKENS:
             raw_chunks.append(
                 (
-                    _meta_with_section(base_meta, sec_num, sec_head, None),
+                    replace(base_meta, section=sec_num, section_heading=sec_head),
                     full_text,
                     sec_num,
                     None,
@@ -165,7 +165,12 @@ def chunk_file(path: Path) -> list[Chunk]:
             ):
                 raw_chunks.append(
                     (
-                        _meta_with_section(base_meta, sec_num, sec_head, sub_label),
+                        replace(
+                            base_meta,
+                            section=sec_num,
+                            section_heading=sec_head,
+                            subsection=sub_label,
+                        ),
                         piece,
                         sec_num,
                         sub_label,
@@ -184,26 +189,6 @@ def chunk_file(path: Path) -> list[Chunk]:
         _make_chunk(meta, text, section, label, idx)
         for idx, (meta, text, section, label) in enumerate(raw_chunks)
     ]
-
-
-def _meta_with_section(
-    base: ChunkMetadata,
-    section: str | None,
-    heading: str | None,
-    subsection: str | None,
-) -> ChunkMetadata:
-    """Return a copy of ``base`` with section/heading/subsection populated."""
-    return ChunkMetadata(
-        source_id=base.source_id,
-        jurisdiction=base.jurisdiction,
-        kind=base.kind,
-        citation=base.citation,
-        short=base.short,
-        source_url=base.source_url,
-        section=section,
-        section_heading=heading,
-        subsection=subsection,
-    )
 
 
 def _make_chunk(

@@ -16,12 +16,6 @@ SECTION_MARKER_RE = re.compile(
     r"\[SECTION § (?P<num>[\w\-.]+)\s*—\s*(?P<head>[^\]]+)\]"
 )
 
-# Inline section markers in the raw text — e.g. "§ 149.110" or "Section 1371.9".
-# (Kept for completeness with the chunker's documented strategy.)
-INLINE_SECTION_RE = re.compile(
-    r"(?m)^(?:§|Section|Sec\.)\s*(?P<num>[\w.\-]+)\b"
-)
-
 # Subsection labels: (a), (1), (i), at the start of a line.
 SUBSECTION_RE = re.compile(r"(?m)^\s*\((?P<label>[a-zA-Z0-9]{1,3})\)\s+")
 

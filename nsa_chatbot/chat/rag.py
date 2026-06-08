@@ -81,7 +81,7 @@ You operate under strict rules:
 OFF_CORPUS_MESSAGE = (
     "I don't have anything matching that in my corpus. I answer questions "
     "about the **federal No Surprises Act** and state surprise-billing / IDR "
-    "law in **CA, IL, NY, NJ, and FL** — grounded in primary sources, with "
+    "law in **CA, IL, NY, NJ, FL, and TN** — grounded in primary sources, with "
     "`[S#]` citations. Try asking about balance billing, emergency services, "
     "the IDR process, or qualifying payment amounts (you can name a state)."
 )
@@ -243,25 +243,30 @@ def _merge_citation_hits(
     return merged[:k]
 
 
+def _retrieve_where(question: str, where: dict | None, k: int) -> list[Chunk]:
+    """Dense search scoped to ``where``: over-fetch, collapse near-duplicates
+    (the tri-agency CFR parallels) so distinct provisions aren't crowded out,
+    then prepend any exact-citation matches and cap to ``k``."""
+    dense = vector_query(
+        question, k=k * RETRIEVAL_OVERFETCH, where=where,
+        max_distance=RELEVANCE_MAX_DISTANCE,
+    )
+    return _merge_citation_hits(question, _collapse_near_dups(dense), where, k)
+
+
 def retrieve(
     question: str,
     k: int = TOP_K,
     jurisdiction: str | None = None,
 ) -> list[Chunk]:
-    where: dict | None = None
     if jurisdiction == "federal":
-        where = {"jurisdiction": "federal"}
+        where: dict | None = {"jurisdiction": "federal"}
     elif jurisdiction:
         # state + federal so the model can compare for preemption
         where = {"jurisdiction": {"$in": [jurisdiction, "federal"]}}
-    # Over-fetch then collapse near-duplicates (the tri-agency CFR parallels)
-    # before truncating to k, so distinct provisions aren't crowded out.
-    dense = vector_query(
-        question, k=k * RETRIEVAL_OVERFETCH, where=where,
-        max_distance=RELEVANCE_MAX_DISTANCE,
-    )
-    dense = _collapse_near_dups(dense)
-    return _merge_citation_hits(question, dense, where, k)
+    else:
+        where = None
+    return _retrieve_where(question, where, k)
 
 
 def retrieve_split(
@@ -277,45 +282,9 @@ def retrieve_split(
     has no material relevant enough to this question — the jurisdiction guard
     treats that as "no coverage".
     """
-    state_where = {"jurisdiction": state}
-    fed_where = {"jurisdiction": "federal"}
-    state_chunks = _merge_citation_hits(
-        question,
-        _collapse_near_dups(vector_query(
-            question, k=k_state * RETRIEVAL_OVERFETCH, where=state_where,
-            max_distance=RELEVANCE_MAX_DISTANCE,
-        )),
-        state_where,
-        k_state,
-    )
-    federal_chunks = _merge_citation_hits(
-        question,
-        _collapse_near_dups(vector_query(
-            question, k=k_federal * RETRIEVAL_OVERFETCH, where=fed_where,
-            max_distance=RELEVANCE_MAX_DISTANCE,
-        )),
-        fed_where,
-        k_federal,
-    )
-    return state_chunks, federal_chunks
-
-
-def answer(
-    question: str,
-    *,
-    jurisdiction: str | None = None,
-    difficulty: str = "simple",
-    k: int = TOP_K,
-) -> Iterator[tuple[str, str]]:
-    """Stream ("progress"/"token", text) tuples, then a final ("sources", footer).
-
-    Seeds the agentic loop with an initial retrieval, then lets the answer model
-    search for any gaps before answering. Convenience entry point for scripts and
-    tests; the chat tab seeds from the jurisdiction guard instead.
-    """
-    seed = retrieve(question, k=k, jurisdiction=jurisdiction)
-    yield from answer_agentic(
-        question, jurisdiction=jurisdiction, seed_chunks=seed, difficulty=difficulty
+    return (
+        _retrieve_where(question, {"jurisdiction": state}, k_state),
+        _retrieve_where(question, {"jurisdiction": "federal"}, k_federal),
     )
 
 
@@ -366,9 +335,6 @@ def answer_agentic(
     jurisdiction: str | None = None,
     seed_chunks: list[Chunk] | None = None,
     difficulty: str = "simple",
-    planner_llm: LLM | None = None,
-    answer_llm: LLM | None = None,
-    max_searches: int | None = None,
 ) -> Iterator[tuple[str, str]]:
     """Two-phase grounded answer. Phase 1: the model issues up to ``max_searches``
     ``search_corpus`` calls to gather provisions (seeded with ``seed_chunks``),
@@ -377,20 +343,18 @@ def answer_agentic(
 
     Models are tiered via ``config.MODEL_POLICY``: the search planner runs on the
     cheap planner model, and generation runs on the ``difficulty``-appropriate
-    answer model (Sonnet for "simple", Opus for "hard"). Pass ``planner_llm`` /
-    ``answer_llm`` to override (tests).
+    answer model (Sonnet for "simple", Opus for "hard").
 
     Yields ("progress", note) while searching, then ("token", ...) / ("sources",
     footer) from generation. Searches are scoped to ``jurisdiction`` by the caller
     (not exposed to the model), so the jurisdiction guard's decision stands. If no
     search returns anything relevant, the canonical off-corpus message is yielded.
     """
-    planner_llm = planner_llm or LLM(MODEL_POLICY["planner"])
-    answer_llm = answer_llm or LLM(MODEL_POLICY["answer"].get(difficulty, MODEL_POLICY["answer"]["hard"]))
+    planner_llm = LLM(MODEL_POLICY["planner"])
+    answer_llm = LLM(MODEL_POLICY["answer"][difficulty])
     # Budget tiers with difficulty: hard questions need broad recall, simple ones stay lean.
-    budget = SEARCH_BUDGET.get(difficulty, SEARCH_BUDGET["hard"])
-    if max_searches is None:
-        max_searches = budget["searches"]
+    budget = SEARCH_BUDGET[difficulty]
+    max_searches = budget["searches"]
     source_cap = budget["sources"]
 
     # Ordered accumulator across all searches; dedup by chunk id. The relevance
