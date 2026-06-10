@@ -16,6 +16,7 @@ from nsa_chatbot.ingest.run import ingest, preview_source
 from nsa_chatbot.store.index import build_index
 
 _NONE = "_No pending proposals._"
+_NONE_DOMAINS = "_No domain suggestions._"
 
 
 def _domain_add(raw: str):
@@ -61,6 +62,27 @@ def _merge_proposals(existing: list[dict], new: list[dict]) -> list[dict]:
     return list(by_id.values())
 
 
+def _merge_domains(existing: list[dict], new: list[dict]) -> list[dict]:
+    """Accumulate domain suggestions across turns, deduped by ``host``."""
+    by_host: dict[str, dict] = {d.get("host"): d for d in existing}
+    for d in new:
+        by_host[d.get("host")] = d
+    return list(by_host.values())
+
+
+def _fmt_domains(domains: list[dict]) -> str:
+    if not domains:
+        return _NONE_DOMAINS
+    lines = [
+        "**Suggested search domains** — the agent wants to search these but they "
+        "aren't on the whitelist yet. Approve to add them and have it search:",
+        "",
+    ]
+    for d in domains:
+        lines.append(f"- **`{d.get('host')}`** — {d.get('reason', '')}")
+    return "\n".join(lines)
+
+
 def _proposal_dropdown(proposals: list[dict]):
     """Dropdown update listing pending proposal ids (first selected)."""
     ids = [p.get("id") for p in proposals]
@@ -81,20 +103,25 @@ def _fmt_proposals(proposals: list[dict]) -> str:
 
 
 def discover_fn(
-    message: str, chat_history: list[dict], agent_msgs: list[dict], pending: list[dict]
+    message: str, chat_history: list[dict], agent_msgs: list[dict],
+    pending: list[dict], domain_pending: list[dict],
 ):
-    """One discovery turn. New proposals are *merged* into ``pending`` (not
-    overwritten), so the operator can gather several across turns and approve
-    them together. A turn with no new proposal — or an error — leaves ``pending``
-    untouched. Returns (chat, agent_msgs, proposals_md, pending, preview_dropdown).
+    """One discovery turn. New source proposals and domain suggestions are each
+    *merged* into their pending set (not overwritten), so the operator can gather
+    several across turns and approve them together. A turn with no new proposal —
+    or an error — leaves the pending sets untouched. Returns (chat, agent_msgs,
+    proposals_md, pending, preview_dropdown, domains_md, domain_pending).
     """
     message = (message or "").strip()
     if not message:
-        return chat_history, agent_msgs, _fmt_proposals(pending), pending, _proposal_dropdown(pending)
+        return (
+            chat_history, agent_msgs, _fmt_proposals(pending), pending,
+            _proposal_dropdown(pending), _fmt_domains(domain_pending), domain_pending,
+        )
     # The user bubble was already added by the pre-step (_accept) so the textbox
     # could clear immediately; here we only append the agent's reply.
     try:
-        reply, proposals, new_msgs = discover(message, agent_msgs)
+        reply, proposals, domain_props, new_msgs = discover(message, agent_msgs)
     except Exception as exc:
         # Keep any pending proposals; only append the error to the chat.
         return (
@@ -103,12 +130,23 @@ def discover_fn(
             _fmt_proposals(pending),
             pending,
             _proposal_dropdown(pending),
+            _fmt_domains(domain_pending),
+            domain_pending,
         )
     merged = _merge_proposals(pending, proposals)
+    merged_domains = _merge_domains(domain_pending, domain_props)
     if not reply:
-        reply = "Found a candidate — review the proposal below." if proposals else "(no response)"
+        if proposals:
+            reply = "Found a candidate — review the proposal below."
+        elif domain_props:
+            reply = "I'd like to search a new domain — approve it below."
+        else:
+            reply = "(no response)"
     chat_history = chat_history + [{"role": "assistant", "content": reply}]
-    return chat_history, new_msgs, _fmt_proposals(merged), merged, _proposal_dropdown(merged)
+    return (
+        chat_history, new_msgs, _fmt_proposals(merged), merged,
+        _proposal_dropdown(merged), _fmt_domains(merged_domains), merged_domains,
+    )
 
 
 def approve_fn(proposals: list[dict]):
@@ -162,6 +200,61 @@ def dismiss_fn():
     return "_Dismissed._", _NONE, [], _proposal_dropdown([])
 
 
+def approve_domains_fn(
+    domain_pending: list[dict], agent_msgs: list[dict],
+    chat_history: list[dict], pending: list[dict],
+):
+    """Approve every suggested domain: add each to the whitelist, then ask the
+    agent to search them and propose the actual sources. New source proposals are
+    merged into ``pending``. Returns (chat, agent_msgs, proposals_md, pending,
+    preview_dropdown, domains_md, domain_pending, domains_group, status).
+    """
+    if not domain_pending:
+        return (
+            chat_history, agent_msgs, _fmt_proposals(pending), pending,
+            _proposal_dropdown(pending), _NONE_DOMAINS, [],
+            gr.update(choices=read_domains()), "_No domain suggestions to approve._",
+        )
+    hosts: list[str] = []
+    for d in domain_pending:
+        before = read_domains()
+        add_domain(d.get("host", ""))
+        if read_domains() != before:
+            hosts.append(read_domains()[-1])
+    status = (
+        "✓ Added to whitelist: " + ", ".join(f"`{h}`" for h in hosts)
+        if hosts else "⚠️ Nothing valid to add."
+    )
+    # Re-run discovery on the now-expanded whitelist so the agent searches the
+    # freshly trusted domains and proposes the specific sources it found.
+    ask = (
+        "I've added these domains to the trusted whitelist: "
+        + ", ".join(hosts)
+        + ". Search them now and propose the specific primary sources."
+    )
+    try:
+        reply, proposals, domain_props, new_msgs = discover(ask, agent_msgs)
+    except Exception as exc:
+        return (
+            chat_history + [{"role": "assistant", "content": f"_Error during re-search:_ {exc}"}],
+            agent_msgs, _fmt_proposals(pending), pending, _proposal_dropdown(pending),
+            _NONE_DOMAINS, [], gr.update(choices=read_domains(), value=[]), status,
+        )
+    merged = _merge_proposals(pending, proposals)
+    if not reply:
+        reply = "Searched the new domains — review the proposals below." if proposals else "(no new sources found)"
+    chat_history = chat_history + [{"role": "assistant", "content": reply}]
+    return (
+        chat_history, new_msgs, _fmt_proposals(merged), merged, _proposal_dropdown(merged),
+        _fmt_domains(domain_props), domain_props,
+        gr.update(choices=read_domains(), value=[]), status,
+    )
+
+
+def dismiss_domains_fn():
+    return _NONE_DOMAINS, [], "_Domain suggestions dismissed._"
+
+
 def rebuild_fn(refetch_all: bool, progress=gr.Progress()) -> str:
     """Fetch sources + rebuild the index, with a live progress bar. By default
     fetches only sources missing from the corpus (the ones you just added);
@@ -201,7 +294,8 @@ def build_discover_tab() -> None:
     )
 
     agent_state = gr.State([])   # anthropic-format discovery conversation
-    pending = gr.State([])       # proposals awaiting approval
+    pending = gr.State([])       # source proposals awaiting approval
+    domain_pending = gr.State([])  # suggested domains awaiting approval
 
     chatbot = gr.Chatbot(height=360)
     msg = gr.Textbox(
@@ -212,6 +306,13 @@ def build_discover_tab() -> None:
     with gr.Row():
         send = gr.Button("Send", variant="primary")
         clear = gr.Button("Clear")
+
+    # Domain suggestions: the agent can ask to search a domain that isn't on the
+    # whitelist; approving adds it and triggers an immediate re-search.
+    domain_proposals_md = gr.Markdown(_NONE_DOMAINS)
+    with gr.Row():
+        approve_domains = gr.Button("Approve domain(s) & search", variant="primary")
+        dismiss_domains = gr.Button("Dismiss domains")
 
     proposals_md = gr.Markdown(_NONE)
     with gr.Row():
@@ -273,8 +374,9 @@ def build_discover_tab() -> None:
             queue=False,
         ).then(
             discover_fn,
-            inputs=[sent, chatbot, agent_state, pending],
-            outputs=[chatbot, agent_state, proposals_md, pending, preview_select],
+            inputs=[sent, chatbot, agent_state, pending, domain_pending],
+            outputs=[chatbot, agent_state, proposals_md, pending, preview_select,
+                     domain_proposals_md, domain_pending],
         )
 
     # Open the accordion instantly (queue=False), then stream the placeholder →
@@ -284,9 +386,19 @@ def build_discover_tab() -> None:
     ).then(preview_fn, [pending, preview_select], [preview_code])
     approve.click(approve_fn, [pending], [status, proposals_md, pending, preview_select])
     dismiss.click(dismiss_fn, None, [status, proposals_md, pending, preview_select])
+    approve_domains.click(
+        approve_domains_fn,
+        [domain_pending, agent_state, chatbot, pending],
+        [chatbot, agent_state, proposals_md, pending, preview_select,
+         domain_proposals_md, domain_pending, domains_group, status],
+    )
+    dismiss_domains.click(
+        dismiss_domains_fn, None, [domain_proposals_md, domain_pending, status]
+    )
     clear.click(
-        lambda: ([], [], _NONE, [], gr.update(choices=[], value=None)),
-        outputs=[chatbot, agent_state, proposals_md, pending, preview_select],
+        lambda: ([], [], _NONE, [], gr.update(choices=[], value=None), _NONE_DOMAINS, []),
+        outputs=[chatbot, agent_state, proposals_md, pending, preview_select,
+                 domain_proposals_md, domain_pending],
     )
     rebuild.click(rebuild_fn, [refetch_all], [rebuild_status])
 

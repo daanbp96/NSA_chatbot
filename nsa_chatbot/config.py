@@ -99,6 +99,8 @@ SOURCE_DOMAINS = [
     "flsenate.gov",                # FL
     "ilga.gov",                    # IL
     "njleg.state.nj.us",           # NJ
+    "statutes.capitol.texas.gov",  # TX statutes (Ins. Code ch. 1467 / SB 1264)
+    "tdi.texas.gov",               # TX — Dept. of Insurance IDR (mediation/arbitration) docs
     # State government base domains — a base domain auto-covers its subdomains
     # (the search API rejects bare TLDs / host wildcards), so e.g. tn.gov covers
     # advance.tn.gov where the TN code lives. tn.gov unblocks TN (the gap state).
@@ -107,4 +109,5 @@ SOURCE_DOMAINS = [
     "ny.gov",
     "nj.gov",
     "il.gov",
+    "texas.gov",
 ]

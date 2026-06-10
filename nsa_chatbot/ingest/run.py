@@ -136,8 +136,13 @@ def ingest(
     summarising successes, failures (each with the reason), and non-fatal
     warnings (e.g. suspiciously thin HTML).
     """
-    with SOURCES_YAML.open() as fh:
-        cfg = yaml.safe_load(fh) or {}
+    # sources.yaml is local-only (untracked); a fresh clone has none until the
+    # Add source tab writes one. Treat a missing file as "nothing to ingest".
+    if SOURCES_YAML.exists():
+        with SOURCES_YAML.open() as fh:
+            cfg = yaml.safe_load(fh) or {}
+    else:
+        cfg = {}
 
     todo: list[tuple[Path, SourceSpec]] = []
     for raw in cfg.get("federal", []) or []:

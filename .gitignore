@@ -12,6 +12,12 @@ __pycache__/
 corpus/
 index/
 
+# Local source registry / discovery state — built per-device via the Add source
+# tab, not shared. source_domains.txt self-seeds from config.SOURCE_DOMAINS;
+# sources.yaml starts empty and is populated through the UI.
+sources.yaml
+source_domains.txt
+
 # OS / editor
 .DS_Store
 .vscode/*.log
@@ -19,3 +25,6 @@ index/
 
 # Local agent state (Claude Code settings, locks)
 .claude/
+
+# Local docs / notes (not committed)
+notes/

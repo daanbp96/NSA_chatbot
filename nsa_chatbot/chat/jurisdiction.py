@@ -14,35 +14,48 @@ from __future__ import annotations
 
 import re
 
-# 2-letter code -> display name, for the six in-scope states.
-STATE_NAMES: dict[str, str] = {
-    "CA": "California",
-    "IL": "Illinois",
-    "NY": "New York",
-    "NJ": "New Jersey",
-    "FL": "Florida",
-    "TN": "Tennessee",
+from nsa_chatbot.core.us_states import US_STATES
+
+# 2-letter code -> display name, for every US state + DC (the dynamic table).
+STATE_NAMES: dict[str, str] = {code: name for code, (name, _slug) in US_STATES.items()}
+
+# Extra case-insensitive aliases for states whose full name alone misses common
+# shorthand (e.g. "Cal. Ins. Code", "215 ILCS"). The full name regex is added
+# for every state automatically below; these only add to that.
+_ALIASES: dict[str, list[str]] = {
+    "CA": [r"\bcalif\b", r"\bcal\.?\s*health", r"\bcal\.?\s*ins",
+           r"\bhealth (?:and|&) safety code\b"],
+    "IL": [r"\bilcs\b"],
+    "NY": [r"\bn\.y\.", r"\bfinancial services law\b"],
+    "NJ": [r"\bn\.j\."],
+    "FL": [r"\bfla\."],
+    "TN": [r"\btenn\."],
+    "TX": [r"\btex\."],
+    "MA": [r"\bmass\."],
+    "PA": [r"\bpenn(?:a)?\.", r"\bpa\.\s*stat"],
+    "CT": [r"\bconn\."],
 }
 
-# Case-insensitive name / citation-prefix signals per state code.
-_NAME_PATTERNS: dict[str, list[str]] = {
-    "CA": [r"\bcalifornia\b", r"\bcalif\b", r"\bcal\.?\s*health", r"\bcal\.?\s*ins",
-           r"\bhealth (?:and|&) safety code\b"],
-    "IL": [r"\billinois\b", r"\bilcs\b"],
-    "NY": [r"\bnew york\b", r"\bn\.y\.", r"\bfinancial services law\b"],
-    "NJ": [r"\bnew jersey\b", r"\bn\.j\."],
-    "FL": [r"\bflorida\b", r"\bfla\."],
-    "TN": [r"\btennessee\b", r"\btenn\."],
-}
+# Per state: a regex on the full display name, plus any aliases above. Built for
+# every state in the table, so a newly added state is detected with no edit.
 _NAME_RES: dict[str, list[re.Pattern]] = {
-    code: [re.compile(p, re.IGNORECASE) for p in pats]
-    for code, pats in _NAME_PATTERNS.items()
+    code: [re.compile(rf"\b{re.escape(name.lower())}\b", re.IGNORECASE)]
+    + [re.compile(p, re.IGNORECASE) for p in _ALIASES.get(code, [])]
+    for code, name in STATE_NAMES.items()
 }
 
 # Postal codes matched case-sensitively as standalone UPPERCASE tokens, so "CA"
-# fires but "ca"/"because" do not.
+# fires but "ca"/"because" do not. Codes that are also common English words are
+# excluded — name detection still covers those states — to keep the detector
+# precise (a false hit triggers an unnecessary jurisdiction-conflict prompt).
+_AMBIGUOUS_POSTAL = {
+    "IN", "OR", "OK", "ME", "HI", "OH", "DE", "PA", "MA", "MO", "MS", "MD",
+    "AL", "ID", "LA", "VA",
+}
 _POSTAL_RES: dict[str, re.Pattern] = {
-    code: re.compile(rf"\b{code}\b") for code in STATE_NAMES
+    code: re.compile(rf"\b{code}\b")
+    for code in STATE_NAMES
+    if code not in _AMBIGUOUS_POSTAL
 }
 
 _AFFIRMATIVE = {

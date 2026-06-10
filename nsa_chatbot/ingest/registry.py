@@ -9,28 +9,28 @@ from __future__ import annotations
 from ruamel.yaml import YAML
 
 from nsa_chatbot.config import CORPUS_DIR, SOURCES_YAML
+from nsa_chatbot.core import us_states
 from nsa_chatbot.ingest.schemas import SourceSpec
-
-# State code -> the `states:` bucket slug used in sources.yaml / the corpus dir.
-_STATE_SLUG = {
-    "CA": "california",
-    "IL": "illinois",
-    "NY": "new-york",
-    "NJ": "new-jersey",
-    "FL": "florida",
-    "TN": "tennessee",
-}
 
 _yaml = YAML()  # round-trip mode preserves comments
 _yaml.preserve_quotes = True
 _yaml.indent(mapping=2, sequence=4, offset=2)  # match sources.yaml's style
 
 
+def _load():
+    """Parsed sources.yaml, or an empty mapping if the file doesn't exist yet.
+    sources.yaml is local-only (untracked) — a fresh clone has none and builds it
+    up through the Add source tab, so every reader must tolerate its absence.
+    """
+    if not SOURCES_YAML.exists():
+        return {}
+    with SOURCES_YAML.open() as fh:
+        return _yaml.load(fh) or {}
+
+
 def existing_ids() -> set[str]:
     """All source ids currently in sources.yaml (federal + every state)."""
-    with SOURCES_YAML.open() as fh:
-        cfg = _yaml.load(fh) or {}
-    return _ids(cfg)
+    return _ids(_load())
 
 
 def _ids(cfg) -> set[str]:
@@ -49,8 +49,7 @@ def source_overview() -> list[dict]:
     """Every declared source with whether its corpus file exists (fetched).
     Index chunk counts are joined in by the caller (store.chunk_counts_by_source).
     """
-    with SOURCES_YAML.open() as fh:
-        cfg = _yaml.load(fh) or {}
+    cfg = _load()
     rows: list[dict] = []
     for raw in cfg.get("federal") or []:
         rows.append(_row(raw, CORPUS_DIR / "federal" / f"{raw.get('id')}.txt"))
@@ -81,20 +80,27 @@ def append_source(entry: dict) -> None:
     except TypeError as exc:
         raise ValueError(f"invalid source entry: {exc}") from exc
 
-    with SOURCES_YAML.open() as fh:
-        cfg = _yaml.load(fh) or {}
+    cfg = _load()
 
     if spec.id in _ids(cfg):
         raise ValueError(f"duplicate source id: {spec.id!r}")
 
+    # Canonicalize the loosely-labeled jurisdiction here, at the write seam, so
+    # the stored value matches what the chat dropdown / detection / retrieval
+    # filter use. Discovery may propose "Colorado", "CO", "Tex." etc.
+    canon = us_states.canonicalize(spec.jurisdiction)
+    if canon is None:
+        raise ValueError(
+            f"unrecognized jurisdiction {spec.jurisdiction!r} — use 'federal' or a "
+            "US state (full name or 2-letter code, e.g. 'Colorado' or 'CO')"
+        )
     new_entry = {k: v for k, v in entry.items() if v is not None}
-    if spec.jurisdiction == "federal":
+    new_entry["jurisdiction"] = canon  # persist the canonical form
+    if canon == "federal":
         cfg.setdefault("federal", [])
         cfg["federal"].append(new_entry)
     else:
-        slug = _STATE_SLUG.get(spec.jurisdiction)
-        if slug is None:
-            raise ValueError(f"unknown jurisdiction {spec.jurisdiction!r}")
+        slug = us_states.slug_for(canon)
         states = cfg.setdefault("states", {})
         states.setdefault(slug, [])
         states[slug].append(new_entry)

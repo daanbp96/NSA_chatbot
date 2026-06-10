@@ -24,9 +24,12 @@ from nsa_chatbot.chat.jurisdiction import (
 from nsa_chatbot.chat.followup import rewrite_query
 from nsa_chatbot.chat.rag import answer_agentic, retrieve, retrieve_split
 from nsa_chatbot.chat.router import route
+from nsa_chatbot.core import us_states
 from nsa_chatbot.store.index import CollectionNotFoundError
 
-STATE_CHOICES = ["all", "federal", "IL", "CA", "NY", "NJ", "FL", "TN"]
+# (label, value) pairs: all + federal, then every US state by name. Any state
+# added via the Add source tab is selectable immediately — no code edit/restart.
+STATE_CHOICES = us_states.choices()
 
 
 def _normalize_state(choice: str) -> str | None:
