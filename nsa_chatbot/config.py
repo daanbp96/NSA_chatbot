@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = ROOT / "corpus"
 INDEX_DIR = ROOT / "index"
 SOURCES_YAML = ROOT / "sources.yaml"
+CONVERSATIONS_DIR = ROOT / "conversations"  # saved chat history (local-only)
 
 # --- Models -----------------------------------------------------------------
 # Answers are always Anthropic; embeddings always OpenAI (Anthropic has no

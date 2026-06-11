@@ -1,0 +1,30 @@
+{
+  "id": "c6fb8e7c24354da0a3e44e6f980e38ff",
+  "title": "hallo",
+  "created_at": "2026-06-11T17:29:11+00:00",
+  "updated_at": "2026-06-11T17:29:11+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "metadata": null,
+      "content": [
+        {
+          "text": "hallo",
+          "type": "text"
+        }
+      ],
+      "options": null
+    },
+    {
+      "role": "assistant",
+      "metadata": null,
+      "content": [
+        {
+          "text": "Hallo! 👋 I'm here to help with questions about surprise billing, the federal No Surprises Act, and state independent dispute resolution (IDR) laws. What would you like to know?",
+          "type": "text"
+        }
+      ],
+      "options": null
+    }
+  ]
+}

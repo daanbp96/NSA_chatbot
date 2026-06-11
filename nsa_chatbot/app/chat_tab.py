@@ -27,7 +27,9 @@ from nsa_chatbot.chat.jurisdiction import (
     detect_jurisdictions,
     is_affirmative,
 )
+from nsa_chatbot.chat import history
 from nsa_chatbot.chat.followup import rewrite_query
+from nsa_chatbot.chat.titling import suggest_title
 from nsa_chatbot.chat.rag import answer_agentic, retrieve, retrieve_split
 from nsa_chatbot.chat.router import converse, route
 from nsa_chatbot.store.index import CollectionNotFoundError
@@ -211,33 +213,87 @@ def chat_fn(message: str, history: list[dict], pending: dict | None):
     yield from _stream_answer(history, question, states, difficulty)
 
 
+def _convo_choices(rows: list[dict]) -> list[tuple[str, str]]:
+    """(label, value) pairs for the conversation list — title shown, id returned."""
+    return [(r.get("title") or "Untitled", r["id"]) for r in rows]
+
+
+def persist_fn(messages: list[dict], current_id: str | None):
+    """Autosave the conversation after a completed turn (assigning an id on first
+    save), and refresh the sidebar. Returns (current_id, conversation-list update).
+    Setting the list's value programmatically does not fire its change event, so
+    this doesn't trigger a reload."""
+    if not messages:
+        return current_id, gr.update()
+    is_new = current_id is None
+    cid = current_id or history.new_id()
+    # Generate a smart title once, on the first turn; on later turns keep the
+    # stored one. `title=None` makes history.save fall back to the truncated
+    # first-message title (also the fallback if the titling call fails).
+    title = suggest_title(messages) if is_new else None
+    history.save(cid, messages, title=title)
+    return cid, gr.update(choices=_convo_choices(history.list_conversations()), value=cid)
+
+
+def new_chat_fn():
+    """Start a fresh, unsaved conversation. Returns
+    (chatbot, pending, current_id, sent, conversation-list update)."""
+    return [], None, None, "", gr.update(value=None)
+
+
+def select_fn(conv_id: str | None):
+    """Load a saved conversation. Returns (chatbot, pending, current_id)."""
+    if not conv_id:
+        return [], None, None
+    conv = history.load(conv_id)
+    return (conv.get("messages", []) if conv else []), None, conv_id
+
+
+def delete_current_fn(current_id: str | None):
+    """Delete the open conversation and clear the view. Returns
+    (chatbot, pending, current_id, conversation-list update)."""
+    if current_id:
+        history.delete(current_id)
+    return [], None, None, gr.update(choices=_convo_choices(history.list_conversations()), value=None)
+
+
 def build_chat_tab() -> None:
     """Create and wire the Chat tab's components inside the active Blocks context."""
-    # Holds a pending federal-fallback offer across turns (the chat is otherwise
-    # stateless). No jurisdiction dropdown — scope is inferred from the question.
+    # Holds a pending federal-fallback offer across turns; the open conversation's
+    # id (None = unsaved new chat); and the just-submitted message (so the textbox
+    # can clear before the slow streaming answer runs).
     pending = gr.State(None)
-
-    chatbot = gr.Chatbot(height=500)
-    msg = gr.Textbox(
-        placeholder="Ask about IDR / surprise billing — name a state (e.g. \"in Texas…\") for state-specific rules",
-        show_label=False,
-        autofocus=True,
-    )
-    with gr.Row():
-        send = gr.Button("Send", variant="primary")
-        clear = gr.Button("Clear")
-
-    # Holds the just-submitted message so the visible textbox can be cleared
-    # *before* the (slow, streaming) answer runs.
+    current_id = gr.State(None)
     sent = gr.State("")
+
+    with gr.Row():
+        # --- Sidebar: saved conversations (ChatGPT-style) ---
+        with gr.Column(scale=1, min_width=210):
+            new_btn = gr.Button("➕ New chat", variant="primary", size="sm")
+            convo_list = gr.Radio(
+                choices=_convo_choices(history.list_conversations()),
+                value=None,
+                label="Conversations",
+                interactive=True,
+            )
+            delete_btn = gr.Button("🗑 Delete current", size="sm")
+
+        # --- Main chat ---
+        with gr.Column(scale=4):
+            chatbot = gr.Chatbot(height=500)
+            msg = gr.Textbox(
+                placeholder="Ask about IDR / surprise billing — name a state (e.g. \"in Texas…\") for state-specific rules",
+                show_label=False,
+                autofocus=True,
+            )
+            send = gr.Button("Send", variant="primary")
 
     def _accept(message: str):
         """Clear the textbox immediately and stash the message for chat_fn."""
         return "", message
 
-    # Two-step wiring: `_accept` runs first with queue=False so the textbox
-    # clears the instant Enter/Send is pressed (not queued behind generation),
-    # stashing the message into `sent`; then `chat_fn` streams from `sent`.
+    # Send/submit: `_accept` clears the box (queue=False, instant) → `chat_fn`
+    # streams the answer → `persist_fn` autosaves + refreshes the sidebar.
     for trigger in (send.click, msg.submit):
         trigger(
             _accept,
@@ -248,6 +304,23 @@ def build_chat_tab() -> None:
             chat_fn,
             inputs=[sent, chatbot, pending],
             outputs=[chatbot, pending],
+        ).then(
+            persist_fn,
+            inputs=[chatbot, current_id],
+            outputs=[current_id, convo_list],
         )
 
-    clear.click(lambda: ([], None), outputs=[chatbot, pending])
+    new_btn.click(
+        new_chat_fn,
+        outputs=[chatbot, pending, current_id, sent, convo_list],
+    )
+    convo_list.change(
+        select_fn,
+        inputs=[convo_list],
+        outputs=[chatbot, pending, current_id],
+    )
+    delete_btn.click(
+        delete_current_fn,
+        inputs=[current_id],
+        outputs=[chatbot, pending, current_id, convo_list],
+    )

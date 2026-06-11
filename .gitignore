@@ -11,6 +11,7 @@ __pycache__/
 # Generated artifacts
 corpus/
 index/
+conversations/   # saved chat history (local-only)
 
 # Local source registry — built per-device via the Add source tab, not shared.
 # sources.yaml starts empty and is populated through the UI.

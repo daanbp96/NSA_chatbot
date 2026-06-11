@@ -1,0 +1,30 @@
+{
+  "id": "71ba1a63917247e8a65a4d1d04e22683",
+  "title": "whats the Texas IDR news",
+  "created_at": "2026-06-11T17:29:54+00:00",
+  "updated_at": "2026-06-11T17:29:54+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "metadata": null,
+      "content": [
+        {
+          "text": "whats the Texas IDR news",
+          "type": "text"
+        }
+      ],
+      "options": null
+    },
+    {
+      "role": "assistant",
+      "metadata": null,
+      "content": [
+        {
+          "text": "## What the Law Says: Recent Texas IDR Developments\n\nThe sources reflect several notable legislative updates to the Texas IDR framework:\n\n- **SB 2544 (89th Legislature)** was recently enacted — this is the most recent legislative development referenced [S1], though the sources do not provide its specific provisions.\n- **HB 1592 (88th Legislature)** allows ERISA plan sponsors to **elect (\"opt in\") to participate in the Texas IDR process** — by default, ERISA plans are governed by the federal NSA process, not Texas's [S1, S4].\n- **Ground ambulance coverage expanded**: Texas's balance billing ban was extended to cover **EMS and ground ambulance trips on or after January 1, 2024** (air ambulance is still excluded) [S4].\n- **ERISA opt-in is active**: TDI has an online form for ERISA plan sponsors to elect into Texas IDR, and TDI maintains a public list of plans that have done so [S1, S4].\n- TDI's IDR page was **last updated October 24, 2025**, suggesting the framework is actively maintained [S1].\n\n---\n\n## Practical Sales/Client Advice\n\n- **If your clients sponsor ERISA plans in Texas**, they now have the option to use the Texas IDR system instead of the federal one — worth flagging as a potential preference depending on their provider relationships.\n- **Ground ambulance disputes are now in scope** for Texas IDR — clients with self-funded plans that opted in need to know this new exposure area.\n- **SB 2544** is the newest development but its substance is not in my corpus — you'll want to flag it to clients as something to monitor.\n\n<details><summary>Sources (7)</summary>\n\n```\n[S1, S2, S4] Tex. Ins. Code ch. 1467 (SB 1264) — TDI Balance billing: Independent Dispute Resolution (overview & coverage scope)  https://www.tdi.texas.gov/medical-billing/index.html\n[S3, S6] Tex. Ins. Code ch. 1467 (SB 1264) — TDI IDR: mediation & arbitration requirements and process FAQ  https://www.tdi.texas.gov/medical-billing/idr-process-faq.html\n[S5] Tex. Ins. Code ch. 1467 (SB 1264) — TDI: what doctors should know about Texas surprise billing law (provider FAQ)  https://www.tdi.texas.gov/medical-billing/faq.html\n[S7] CMS, Overview of Rules & Fact Sheets (No Surprises Act)  https://www.cms.gov/NOSURPRISES/POLICIES-AND-RESOURCES/OVERVIEW-OF-RULES-FACT-SHEETS\n[S8] 29 C.F.R. § 2590.716 et seq. (NSA implementing regs - DOL) (§ 2590.716-8)  https://www.ecfr.gov/on/2026-06-08/title-29/part-2590\n[S9, S10, S11] 26 C.F.R. § 54.9816-1T et seq. (NSA implementing regs - Treasury) (§ 54.9816-8T)  https://www.ecfr.gov/on/2026-06-08/title-26/part-54\n[S12] 45 C.F.R. Part 149 (Surprise Billing and Transparency Requirements) (§ 149.510)  https://www.ecfr.gov/on/2026-06-08/title-45/part-149\n```\n\n</details>",
+          "type": "text"
+        }
+      ],
+      "options": null
+    }
+  ]
+}
