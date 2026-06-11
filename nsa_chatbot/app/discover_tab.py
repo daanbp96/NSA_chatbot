@@ -104,36 +104,54 @@ def _reject_one(pid: str, proposals: list[dict]):
     return [p for p in proposals if p.get("id") != pid], f"Rejected `{pid}`."
 
 
-def rebuild_fn(refetch_all: bool, progress=gr.Progress()) -> str:
-    """Fetch sources + rebuild the index, with a live progress bar. By default
-    fetches only sources missing from the corpus (the ones you just approved);
-    tick *Re-fetch all* to re-download everything. The index is always rebuilt
-    wholesale from the corpus on disk.
+def rebuild_fn(refetch_all: bool, progress=gr.Progress()):
+    """Fetch sources + rebuild the index, **streaming** phase updates into the
+    status box (plus a granular progress bar) so it's obvious work is happening.
+    By default fetches only sources missing from the corpus (the ones you just
+    approved); tick *Re-fetch all* to re-download everything. The index is always
+    rebuilt wholesale from the corpus on disk.
 
-    Reports per-source chunk counts so a link that fetched to little/garbage (a
-    JS-only page, a redirect, a non-PDF served as PDF) is obvious even though it
-    didn't raise — this replaces the old slow pre-approve preview.
+    The final report lists per-source chunk counts so a link that fetched to
+    little/garbage (a JS-only page, a redirect, a non-PDF served as PDF) is
+    obvious even though it didn't raise — this replaces the old slow preview.
     """
+    yield "⏳ Working… deciding which sources to fetch."
     try:
         only = None if refetch_all else {
             r["id"] for r in source_overview() if not r["in_corpus"]
         }
+        n_fetch = "all" if only is None else len(only)
+        yield (
+            f"⏳ Fetching {n_fetch} source(s)… (slow or unreachable sites can take "
+            "a while; web_fetch falls back through Anthropic)."
+        )
         progress(0, desc="Fetching sources…")
         r = ingest(
             only_ids=only,
-            on_progress=lambda i, n, sid: progress((i, n), desc=f"Fetching {sid}"),
-        )
-        count = build_index(
-            on_progress=lambda done, n: progress((done, n), desc="Embedding + indexing"),
+            on_progress=lambda i, n, sid: progress((i, n), desc=f"Fetching {sid} ({i}/{n})"),
         )
     except Exception as exc:
-        return f"_Rebuild failed:_ `{exc}`"
+        yield f"_Rebuild failed during fetch:_ `{exc}`"
+        return
+
+    yield (
+        f"✓ Fetched: **{len(r.succeeded)}** ok, **{len(r.failures)}** failed, "
+        f"**{len(r.skipped)}** skipped.\n\n⏳ Embedding + rebuilding the index "
+        "(re-embeds the whole corpus — this is usually the slow part)…"
+    )
+    try:
+        count = build_index(
+            on_progress=lambda done, n: progress((done, n), desc=f"Embedding {done}/{n}"),
+        )
+    except Exception as exc:
+        yield f"_Rebuild failed during indexing:_ `{exc}`"
+        return
 
     counts = chunk_counts_by_source()
     scope = "all sources" if refetch_all else "new/missing sources"
     lines = [
-        f"Fetched {scope}: **{len(r.succeeded)}** ok, **{len(r.failures)}** failed, "
-        f"**{len(r.skipped)}** skipped. Index rebuilt with **{count}** chunks."
+        f"✅ Done. Fetched {scope}: **{len(r.succeeded)}** ok, **{len(r.failures)}** "
+        f"failed, **{len(r.skipped)}** skipped. Index rebuilt with **{count}** chunks."
     ]
     if r.succeeded:
         lines += ["", "**Fetched sources (chunks indexed):**"]
@@ -147,7 +165,7 @@ def rebuild_fn(refetch_all: bool, progress=gr.Progress()) -> str:
     if r.warnings:
         lines += ["", "**Warnings:**"]
         lines += [f"- {w}" for w in r.warnings]
-    return "\n".join(lines)
+    yield "\n".join(lines)
 
 
 def build_discover_tab() -> None:

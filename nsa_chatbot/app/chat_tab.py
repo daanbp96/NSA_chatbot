@@ -29,8 +29,10 @@ from nsa_chatbot.chat.jurisdiction import (
 )
 from nsa_chatbot.chat.followup import rewrite_query
 from nsa_chatbot.chat.rag import answer_agentic, retrieve, retrieve_split
-from nsa_chatbot.chat.router import route
+from nsa_chatbot.chat.router import converse, route
 from nsa_chatbot.store.index import CollectionNotFoundError
+
+_THINKING = "💭 Thinking…"
 
 _BASELINE_NUDGE = (
     "\n\n_That's the federal rule. Name a state (e.g. \"in Texas…\") and I'll give "
@@ -149,7 +151,11 @@ def chat_fn(message: str, history: list[dict], pending: dict | None):
     prior = history  # turns before this message — used for follow-up rewriting
     history = history + [{"role": "user", "content": message}]
     yield history, pending
-    history = history + [{"role": "assistant", "content": ""}]
+    # Instant feedback: a "thinking" placeholder so the bubble isn't blank during
+    # the router call (and, for legal turns, the rewrite + retrieval before the
+    # first "searching…" note). Every downstream path overwrites this content.
+    history = history + [{"role": "assistant", "content": _THINKING}]
+    yield history, pending
 
     # 1. Resolve a federal-fallback offer made on the previous turn.
     if pending and pending.get("kind") == "offer_federal":
@@ -175,8 +181,22 @@ def chat_fn(message: str, history: list[dict], pending: dict | None):
     # questions simple/hard for answer-model tiering. Fails safe to legal/hard.
     routed = route(message, prior)
     if routed.route == "conversational":
-        history[-1]["content"] = routed.reply
-        yield history, None
+        # Stream the chit-chat reply (cheap Haiku) so it types out instead of
+        # landing as a delayed lump; the first token replaces the placeholder.
+        reply = ""
+        try:
+            for tok in converse(message, prior):
+                reply += tok
+                history[-1]["content"] = reply
+                yield history, None
+        except Exception:
+            reply = ""
+        if not reply.strip():
+            history[-1]["content"] = (
+                "Hi! I can help with the federal No Surprises Act and state "
+                "surprise-billing / IDR questions — ask away."
+            )
+            yield history, None
         return
 
     # 3. Legal question. Rewrite a follow-up into a standalone query using prior
