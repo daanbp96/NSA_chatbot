@@ -1,10 +1,14 @@
 # NSA IDR Assistant
 
-A grounded chatbot for the federal **No Surprises Act** and state surprise-billing / IDR law
-(CA, IL, NY, NJ, FL). Every answer is grounded in primary-source legal text and cited `[S#]`;
+A grounded chatbot for the federal **No Surprises Act** and **state surprise-billing / IDR law for
+any US state you add**. Every answer is grounded in primary-source legal text and cited `[S#]`;
 if the corpus doesn't cover something, it says so rather than guessing.
 
 Runs locally as a web app (Gradio) with three tabs: **Chat**, **Add source**, **Source overview**.
+
+The legal corpus is **not shipped** — you build it on your own machine through the **Add source**
+tab (search → verify each link → approve → rebuild). Nothing about which states are covered is
+hardcoded; you add the ones you need.
 
 ---
 
@@ -46,19 +50,7 @@ OPENAI_API_KEY=sk-...
 
 (`.env` is private — it is never uploaded to GitHub.)
 
-### 4. Build the corpus + index (one time, ~a few minutes)
-
-The legal documents and the search index are **not** stored in the repo — you build them once.
-This downloads the source documents and embeds them (costs a few cents of OpenAI usage):
-
-```bash
-uv run python -c "from nsa_chatbot.ingest.run import ingest; from nsa_chatbot.store.index import build_index; r=ingest(); print('fetched', r.ok, 'sources,', r.fail, 'failed'); print('indexed', build_index(), 'chunks')"
-```
-
-A couple of sources may fail to fetch (some government sites block automated access) — that's
-expected; the rest still work.
-
-### 5. Run it
+### 4. Run it
 
 ```bash
 uv run python -m nsa_chatbot
@@ -66,21 +58,38 @@ uv run python -m nsa_chatbot
 
 Open the link it prints (**http://127.0.0.1:7860**) in your browser. To stop it, press `Ctrl+C`.
 
+### 5. Build your corpus (in the app, one time)
+
+A fresh install has no legal documents yet, so the Chat tab will say it has nothing in its corpus.
+Fill it from the **Add source** tab:
+
+1. Describe what you need, e.g. *"I need IDR documentation for the state of Texas."*
+2. The assistant searches the web and proposes a few candidate links.
+3. **Open each link to check it's a legit primary source**, then click **✓ Approve** (or **✗ Reject**)
+   on the ones you want — one by one.
+4. Click **Fetch + rebuild index**. This downloads the approved documents and embeds them (a few
+   cents of OpenAI usage) and shows how many chunks each source produced.
+
+Repeat for any state or topic. A source that fetched almost nothing (flagged with ⚠️ in the rebuild
+report, e.g. a JavaScript-only page) should be dropped and replaced — open its link and find a
+plain-HTML or PDF version.
+
 ---
 
 ## Day-to-day
 
-- **Just run it again:** `cd NSA_chatbot && uv run python -m nsa_chatbot` (steps 1–4 are one-time).
+- **Just run it again:** `cd NSA_chatbot && uv run python -m nsa_chatbot`.
 - **Get updates:** `git pull` then `uv sync`. If the update changed how documents are processed,
-  re-run step 4 to rebuild the index.
-- **Add a new legal source:** use the **Add source** tab in the app — describe what you need, approve
-  the proposal, then click **Fetch + rebuild index**.
+  click **Fetch + rebuild index** (tick *Re-fetch all*) to rebuild.
+- **Add more sources:** the **Add source** tab, anytime — approve links, then **Fetch + rebuild index**.
+
+Your corpus (`sources.yaml`, `corpus/`, `index/`) stays on your machine and is never uploaded.
 
 ## Troubleshooting
 
 - *"ANTHROPIC_API_KEY not set"* or an OpenAI auth error → check step 3 (`.env` keys filled in, no spaces).
-- *The chat says the index needs to be built* → run step 4.
+- *The chat says it has nothing in its corpus* → add sources via the **Add source** tab (step 5).
 - *Clone fails with "repository not found"* → you need collaborator access to the private repo.
 
-> Tip: to skip step 4, Daan can share a prebuilt `index/` folder — drop it into the project root and
-> the app will use it directly.
+> Tip: Daan can share a prebuilt `sources.yaml` + `index/` — drop them into the project root and the
+> app will use them directly, skipping step 5.

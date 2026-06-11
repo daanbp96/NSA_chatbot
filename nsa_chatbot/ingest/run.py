@@ -104,25 +104,6 @@ def _local_or_web_fetch(local_fetch, url: str) -> FetchedDoc:
         raise
 
 
-def preview_source(entry: dict, max_chars: int = 4000) -> str:
-    """Fetch a proposed source and return the head of the extracted text — so a
-    reviewer sees what would actually land in the corpus *before* approving.
-    Reuses the same fetch dispatch as ingest; returns a bracketed message on
-    failure (e.g. unreachable host) instead of raising.
-    """
-    try:
-        spec = SourceSpec.from_dict(entry)
-        doc = _fetch_one(spec)
-    except IngestError as exc:
-        return f"[could not fetch: {exc}]"
-    except Exception as exc:
-        return f"[fetch error: {exc}]"
-    if doc is None:
-        return "[fetcher: skip — nothing to fetch/preview]"
-    text = doc.text.strip()
-    prefix = f"[warning: {doc.warning}]\n\n" if doc.warning else ""
-    suffix = f"\n\n… ({len(text)} chars total)" if len(text) > max_chars else ""
-    return prefix + text[:max_chars] + suffix
 
 
 def ingest(

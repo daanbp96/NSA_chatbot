@@ -1,8 +1,11 @@
-"""Add-source tab: chat-driven discovery → approve → append to sources.yaml.
+"""Add-source tab: chat-driven discovery → per-link approval → append to sources.yaml.
 
-The agent (`ingest.discover`) searches whitelisted domains and proposes entries;
-the user approves to append them (`ingest.registry.append_source`); when done,
-"Fetch + rebuild" runs the existing `ingest()` + `build_index()`.
+The agent (`ingest.discover`) searches the open web and proposes candidate primary
+sources. The reviewer opens each link to verify it and **Approves or Rejects it
+one by one** (`ingest.registry.append_source`); when done, "Fetch + rebuild" runs
+the existing `ingest()` + `build_index()`. There is no domain whitelist — the
+human is the trust gate. The post-rebuild report shows per-source chunk counts so
+a link that fetched to little/garbage is obvious without a slow pre-approve preview.
 """
 
 from __future__ import annotations
@@ -10,51 +13,15 @@ from __future__ import annotations
 import gradio as gr
 
 from nsa_chatbot.ingest.discover import discover
-from nsa_chatbot.ingest.domains import add_domain, read_domains, remove_domain
 from nsa_chatbot.ingest.registry import append_source, source_overview
-from nsa_chatbot.ingest.run import ingest, preview_source
-from nsa_chatbot.store.index import build_index
-
-_NONE = "_No pending proposals._"
-_NONE_DOMAINS = "_No domain suggestions._"
-
-
-def _domain_add(raw: str):
-    """Add a domain to the whitelist with visible feedback. ``add_domain`` no-ops
-    on an unparseable host (bare TLD, junk), so detect that and say so."""
-    before = read_domains()
-    domains = add_domain(raw)
-    raw = (raw or "").strip()
-    if not raw:
-        status = ""
-    elif len(domains) > len(before):
-        status = f"✓ Added `{domains[-1]}`."
-    elif raw:
-        status = (
-            f"⚠️ `{raw}` isn't a valid host to add. Use a full domain like "
-            "`tn.gov` (bare TLDs and `*` wildcards aren't accepted), or it's "
-            "already in the list."
-        )
-    return gr.update(choices=domains, value=[]), "", status
-
-
-def _domain_remove(selected: list[str]):
-    domains = read_domains()
-    removed = [d for d in (selected or []) if d in domains]
-    for d in removed:
-        domains = remove_domain(d)
-    status = (
-        "✓ Removed " + ", ".join(f"`{d}`" for d in removed) if removed
-        else "_Check a domain first, then Remove selected._"
-    )
-    return gr.update(choices=domains, value=[]), status
+from nsa_chatbot.ingest.run import ingest
+from nsa_chatbot.store.index import build_index, chunk_counts_by_source
 
 
 def _merge_proposals(existing: list[dict], new: list[dict]) -> list[dict]:
     """Accumulate proposals across discovery turns, deduped by ``id`` (a later
-    proposal with the same id replaces the earlier one, position preserved). This
-    is what lets the operator build up several sources and approve them together —
-    without it, each new turn (even a plain follow-up) overwrites the pending set.
+    proposal with the same id replaces the earlier one, position preserved), so
+    the reviewer can gather candidates over several turns before approving.
     """
     by_id: dict[str, dict] = {p.get("id"): p for p in existing}
     for p in new:
@@ -62,204 +29,90 @@ def _merge_proposals(existing: list[dict], new: list[dict]) -> list[dict]:
     return list(by_id.values())
 
 
-def _merge_domains(existing: list[dict], new: list[dict]) -> list[dict]:
-    """Accumulate domain suggestions across turns, deduped by ``host``."""
-    by_host: dict[str, dict] = {d.get("host"): d for d in existing}
-    for d in new:
-        by_host[d.get("host")] = d
-    return list(by_host.values())
-
-
-def _fmt_domains(domains: list[dict]) -> str:
-    if not domains:
-        return _NONE_DOMAINS
-    lines = [
-        "**Suggested search domains** — the agent wants to search these but they "
-        "aren't on the whitelist yet. Approve to add them and have it search:",
-        "",
-    ]
-    for d in domains:
-        lines.append(f"- **`{d.get('host')}`** — {d.get('reason', '')}")
-    return "\n".join(lines)
-
-
-def _proposal_dropdown(proposals: list[dict]):
-    """Dropdown update listing pending proposal ids (first selected)."""
-    ids = [p.get("id") for p in proposals]
-    return gr.update(choices=ids, value=(ids[0] if ids else None))
-
-
-def _fmt_proposals(proposals: list[dict]) -> str:
-    if not proposals:
-        return _NONE
-    lines = ["**Proposed sources** — review, then Approve to add to `sources.yaml`:", ""]
-    for p in proposals:
-        lines.append(
-            f"- **{p.get('citation', '?')}** "
-            f"({p.get('jurisdiction')}/{p.get('kind')}, `{p.get('fetcher')}`)  \n"
-            f"  id `{p.get('id')}` — {p.get('url', '(no url)')}"
-        )
-    return "\n".join(lines)
-
-
 def discover_fn(
-    message: str, chat_history: list[dict], agent_msgs: list[dict],
-    pending: list[dict], domain_pending: list[dict],
+    message: str, chat_history: list[dict], agent_msgs: list[dict], pending: list[dict]
 ):
-    """One discovery turn. New source proposals and domain suggestions are each
-    *merged* into their pending set (not overwritten), so the operator can gather
-    several across turns and approve them together. A turn with no new proposal —
-    or an error — leaves the pending sets untouched. Returns (chat, agent_msgs,
-    proposals_md, pending, preview_dropdown, domains_md, domain_pending).
+    """One discovery turn (generator, so the chat streams progress). Shows a live
+    "searching…" bubble while the open-web agent works — which can take up to a
+    minute — then replaces it with the reply. New candidates are *merged* into
+    ``pending`` (not overwritten); a turn with no new candidate (or an error)
+    leaves ``pending`` untouched. Yields (chat, agent_msgs, pending).
     """
     message = (message or "").strip()
     if not message:
-        return (
-            chat_history, agent_msgs, _fmt_proposals(pending), pending,
-            _proposal_dropdown(pending), _fmt_domains(domain_pending), domain_pending,
-        )
-    # The user bubble was already added by the pre-step (_accept) so the textbox
-    # could clear immediately; here we only append the agent's reply.
+        yield chat_history, agent_msgs, pending
+        return
+
+    # The user bubble was already added by the pre-step (_accept). Stream the
+    # agent's progress into a placeholder assistant bubble so the tab never looks
+    # frozen during the (slow) multi-round web search.
+    reply, proposals, new_msgs = "", [], agent_msgs
     try:
-        reply, proposals, domain_props, new_msgs = discover(message, agent_msgs)
+        for kind, payload in discover(message, agent_msgs):
+            if kind == "progress":
+                yield (
+                    chat_history + [{"role": "assistant", "content": f"🔎 {payload}"}],
+                    agent_msgs,
+                    pending,
+                )
+            else:  # ("result", (reply, proposals, messages))
+                reply, proposals, new_msgs = payload
     except Exception as exc:
-        # Keep any pending proposals; only append the error to the chat.
-        return (
+        yield (
             chat_history + [{"role": "assistant", "content": f"_Error:_ {exc}"}],
             agent_msgs,
-            _fmt_proposals(pending),
             pending,
-            _proposal_dropdown(pending),
-            _fmt_domains(domain_pending),
-            domain_pending,
         )
-    merged = _merge_proposals(pending, proposals)
-    merged_domains = _merge_domains(domain_pending, domain_props)
-    if not reply:
-        if proposals:
-            reply = "Found a candidate — review the proposal below."
-        elif domain_props:
-            reply = "I'd like to search a new domain — approve it below."
-        else:
-            reply = "(no response)"
-    chat_history = chat_history + [{"role": "assistant", "content": reply}]
-    return (
-        chat_history, new_msgs, _fmt_proposals(merged), merged,
-        _proposal_dropdown(merged), _fmt_domains(merged_domains), merged_domains,
-    )
-
-
-def approve_fn(proposals: list[dict]):
-    """Append every pending proposal to sources.yaml. Returns
-    (status, proposals_md, pending, preview_dropdown). Clears the pending set."""
-    if not proposals:
-        return "_Nothing to approve._", _NONE, [], _proposal_dropdown([])
-    added, errors = [], []
-    for p in proposals:
-        try:
-            append_source(p)
-            added.append(p.get("id"))
-        except ValueError as exc:
-            errors.append(f"`{p.get('id')}`: {exc}")
-        except Exception as exc:  # don't let one bad entry silently no-op the click
-            errors.append(f"`{p.get('id')}`: unexpected error: {exc}")
-    lines = []
-    if added:
-        n = len(added)
-        lines.append(
-            f"✅ **Added {n} source{'s' if n != 1 else ''} to `sources.yaml`:** "
-            + ", ".join(f"`{i}`" for i in added)
-        )
-        lines.append("")
-        lines.append("_Now click **Fetch + rebuild index** below to fetch and index them._")
-    if errors:
-        lines.append("**⚠️ Skipped:**")
-        lines += [f"- {e}" for e in errors]
-    return "\n".join(lines), _NONE, [], _proposal_dropdown([])
-
-
-def preview_fn(proposals: list[dict], selected_id: str | None):
-    """Fetch-preview a single proposal (the one picked in the dropdown, or the
-    first if none selected). A generator so the box shows a placeholder the
-    instant it's clicked — fetching + parsing a source can take a few seconds
-    (and longer for slow or unreachable sites)."""
-    if not proposals:
-        yield "(nothing to preview)"
         return
-    chosen = next((p for p in proposals if p.get("id") == selected_id), proposals[0])
-    cid = chosen.get("id")
-    yield (
-        f"⏳ Fetching & parsing {cid}…\n"
-        "(some state sites are slow or unreachable; this can take a few seconds)"
-    )
-    head = preview_source(chosen)
-    yield f"### {cid} — {chosen.get('url', '(no url)')}\n{head}"
 
-
-def dismiss_fn():
-    return "_Dismissed._", _NONE, [], _proposal_dropdown([])
-
-
-def approve_domains_fn(
-    domain_pending: list[dict], agent_msgs: list[dict],
-    chat_history: list[dict], pending: list[dict],
-):
-    """Approve every suggested domain: add each to the whitelist, then ask the
-    agent to search them and propose the actual sources. New source proposals are
-    merged into ``pending``. Returns (chat, agent_msgs, proposals_md, pending,
-    preview_dropdown, domains_md, domain_pending, domains_group, status).
-    """
-    if not domain_pending:
-        return (
-            chat_history, agent_msgs, _fmt_proposals(pending), pending,
-            _proposal_dropdown(pending), _NONE_DOMAINS, [],
-            gr.update(choices=read_domains()), "_No domain suggestions to approve._",
-        )
-    hosts: list[str] = []
-    for d in domain_pending:
-        before = read_domains()
-        add_domain(d.get("host", ""))
-        if read_domains() != before:
-            hosts.append(read_domains()[-1])
-    status = (
-        "✓ Added to whitelist: " + ", ".join(f"`{h}`" for h in hosts)
-        if hosts else "⚠️ Nothing valid to add."
-    )
-    # Re-run discovery on the now-expanded whitelist so the agent searches the
-    # freshly trusted domains and proposes the specific sources it found.
-    ask = (
-        "I've added these domains to the trusted whitelist: "
-        + ", ".join(hosts)
-        + ". Search them now and propose the specific primary sources."
-    )
-    try:
-        reply, proposals, domain_props, new_msgs = discover(ask, agent_msgs)
-    except Exception as exc:
-        return (
-            chat_history + [{"role": "assistant", "content": f"_Error during re-search:_ {exc}"}],
-            agent_msgs, _fmt_proposals(pending), pending, _proposal_dropdown(pending),
-            _NONE_DOMAINS, [], gr.update(choices=read_domains(), value=[]), status,
-        )
     merged = _merge_proposals(pending, proposals)
     if not reply:
-        reply = "Searched the new domains — review the proposals below." if proposals else "(no new sources found)"
-    chat_history = chat_history + [{"role": "assistant", "content": reply}]
-    return (
-        chat_history, new_msgs, _fmt_proposals(merged), merged, _proposal_dropdown(merged),
-        _fmt_domains(domain_props), domain_props,
-        gr.update(choices=read_domains(), value=[]), status,
+        reply = (
+            "Found candidates — review them below." if proposals
+            else "I couldn't find primary sources to propose for that. Try naming a "
+            "specific statute, agency, or state — or note that the state may have no "
+            "surprise-billing law."
+        )
+    yield chat_history + [{"role": "assistant", "content": reply}], new_msgs, merged
+
+
+def _approve_one(pid: str, proposals: list[dict]):
+    """Append the one candidate with id ``pid`` to sources.yaml, then drop it from
+    the pending list. On a validation error (duplicate id / bad jurisdiction) keep
+    it and surface the message. Returns (pending, status)."""
+    proposals = proposals or []
+    target = next((p for p in proposals if p.get("id") == pid), None)
+    if target is None:
+        return proposals, "_That candidate is no longer pending._"
+    try:
+        append_source(target)
+    except ValueError as exc:
+        return proposals, f"⚠️ `{pid}`: {exc}"
+    except Exception as exc:
+        return proposals, f"⚠️ `{pid}`: unexpected error: {exc}"
+    remaining = [p for p in proposals if p.get("id") != pid]
+    return remaining, (
+        f"✅ Added `{pid}` to `sources.yaml`. Click **Fetch + rebuild index** "
+        "when you're done approving."
     )
 
 
-def dismiss_domains_fn():
-    return _NONE_DOMAINS, [], "_Domain suggestions dismissed._"
+def _reject_one(pid: str, proposals: list[dict]):
+    """Drop the candidate with id ``pid`` from the pending list. Returns
+    (pending, status)."""
+    proposals = proposals or []
+    return [p for p in proposals if p.get("id") != pid], f"Rejected `{pid}`."
 
 
 def rebuild_fn(refetch_all: bool, progress=gr.Progress()) -> str:
     """Fetch sources + rebuild the index, with a live progress bar. By default
-    fetches only sources missing from the corpus (the ones you just added);
-    tick *Re-fetch all* to re-download everything (e.g. to pick up upstream edits).
-    The index is always rebuilt wholesale from the corpus on disk.
+    fetches only sources missing from the corpus (the ones you just approved);
+    tick *Re-fetch all* to re-download everything. The index is always rebuilt
+    wholesale from the corpus on disk.
+
+    Reports per-source chunk counts so a link that fetched to little/garbage (a
+    JS-only page, a redirect, a non-PDF served as PDF) is obvious even though it
+    didn't raise — this replaces the old slow pre-approve preview.
     """
     try:
         only = None if refetch_all else {
@@ -275,31 +128,43 @@ def rebuild_fn(refetch_all: bool, progress=gr.Progress()) -> str:
         )
     except Exception as exc:
         return f"_Rebuild failed:_ `{exc}`"
-    note = ""
-    if r.failures:
-        note = " _(some sources failed to fetch — see Source overview for details)_"
+
+    counts = chunk_counts_by_source()
     scope = "all sources" if refetch_all else "new/missing sources"
-    return (
+    lines = [
         f"Fetched {scope}: **{len(r.succeeded)}** ok, **{len(r.failures)}** failed, "
-        f"**{len(r.skipped)}** skipped. Index rebuilt with **{count}** chunks.{note}"
-    )
+        f"**{len(r.skipped)}** skipped. Index rebuilt with **{count}** chunks."
+    ]
+    if r.succeeded:
+        lines += ["", "**Fetched sources (chunks indexed):**"]
+        for sid in sorted(r.succeeded):
+            c = counts.get(sid, 0)
+            flag = "  ⚠️ fetched little — re-check the link" if c <= 1 else ""
+            lines.append(f"- `{sid}`: {c}{flag}")
+    if r.failures:
+        lines += ["", "**⚠️ Failed to fetch:**"]
+        lines += [f"- `{f.source_id}`: {f.reason}" for f in r.failures]
+    if r.warnings:
+        lines += ["", "**Warnings:**"]
+        lines += [f"- {w}" for w in r.warnings]
+    return "\n".join(lines)
 
 
 def build_discover_tab() -> None:
     """Create and wire the Add-source tab inside the active Blocks context."""
     gr.Markdown("### Add a source")
     gr.Markdown(
-        "_Describe what you need; I search trusted legal domains and propose sources. "
-        "Approve to add them to `sources.yaml`, then rebuild._"
+        "_Describe what you need; I search the open web and propose candidate "
+        "primary sources. **Open each link to verify it**, then Approve or Reject — "
+        "approved sources are added to `sources.yaml`. When done, rebuild._"
     )
 
     agent_state = gr.State([])   # anthropic-format discovery conversation
-    pending = gr.State([])       # source proposals awaiting approval
-    domain_pending = gr.State([])  # suggested domains awaiting approval
+    pending = gr.State([])       # source candidates awaiting per-link approval
 
     chatbot = gr.Chatbot(height=360)
     msg = gr.Textbox(
-        placeholder="e.g. 'Find the CMS guidance on the federal IDR process'",
+        placeholder="e.g. 'I need IDR documentation for the state of Texas'",
         show_label=False,
         autofocus=True,
     )
@@ -307,28 +172,39 @@ def build_discover_tab() -> None:
         send = gr.Button("Send", variant="primary")
         clear = gr.Button("Clear")
 
-    # Domain suggestions: the agent can ask to search a domain that isn't on the
-    # whitelist; approving adds it and triggers an immediate re-search.
-    domain_proposals_md = gr.Markdown(_NONE_DOMAINS)
-    with gr.Row():
-        approve_domains = gr.Button("Approve domain(s) & search", variant="primary")
-        dismiss_domains = gr.Button("Dismiss domains")
-
-    proposals_md = gr.Markdown(_NONE)
-    with gr.Row():
-        # Pick which pending proposal to preview (avoids cramming several into one box).
-        preview_select = gr.Dropdown(
-            choices=[], label="Proposal to preview", scale=2, interactive=True
-        )
-        preview = gr.Button("Preview fetch", scale=1)
-        approve = gr.Button("Approve & add", variant="primary", scale=1)
-        dismiss = gr.Button("Dismiss", scale=1)
-    preview_acc = gr.Accordion("Preview (what would be indexed)", open=False)
-    with preview_acc:
-        # Equal lines/max_lines = fixed-height box that scrolls internally
-        # instead of growing with the (now longer) preview text.
-        preview_code = gr.Code(value="", language=None, lines=14, max_lines=14)
     status = gr.Markdown()
+
+    # Candidate list: one row per proposal, each with its own Approve/Reject.
+    # Re-renders whenever `pending` changes (e.g. after an approve/reject).
+    @gr.render(inputs=[pending])
+    def render_candidates(proposals):
+        if not proposals:
+            gr.Markdown("_No candidates yet — describe what you need above._")
+            return
+        n = len(proposals)
+        gr.Markdown(
+            f"**{n} candidate{'s' if n != 1 else ''}** — open each link to verify, "
+            "then Approve or Reject:"
+        )
+        for p in proposals:
+            pid = p.get("id")
+            with gr.Row():
+                gr.Markdown(
+                    f"**{p.get('citation', '?')}**  \n"
+                    f"[{p.get('url', '(no url)')}]({p.get('url', '')}) — "
+                    f"`{pid}` ({p.get('jurisdiction')}/{p.get('kind')}, `{p.get('fetcher')}`)"
+                )
+                approve_btn = gr.Button("✓ Approve", variant="primary", scale=0, min_width=120)
+                reject_btn = gr.Button("✗ Reject", scale=0, min_width=120)
+            # Default-arg binds this row's id into each handler's closure.
+            approve_btn.click(
+                lambda cur, _pid=pid: _approve_one(_pid, cur),
+                inputs=[pending], outputs=[pending, status],
+            )
+            reject_btn.click(
+                lambda cur, _pid=pid: _reject_one(_pid, cur),
+                inputs=[pending], outputs=[pending, status],
+            )
 
     gr.Markdown("---")
     refetch_all = gr.Checkbox(
@@ -337,21 +213,6 @@ def build_discover_tab() -> None:
     )
     rebuild = gr.Button("Fetch + rebuild index")
     rebuild_status = gr.Markdown()
-
-    with gr.Accordion("Search domains (the agent only searches these)", open=False):
-        gr.Markdown("_Add by URL or host; check one + Remove selected to drop it._")
-        domains_group = gr.CheckboxGroup(
-            choices=read_domains(), value=[], label="Whitelisted domains"
-        )
-        with gr.Row():
-            domain_input = gr.Textbox(
-                label="Add domain (URL or host)",
-                placeholder="e.g. https://advance.tn.gov or advance.tn.gov",
-                scale=3,
-            )
-            add_domain_btn = gr.Button("Add", scale=1)
-        remove_domain_btn = gr.Button("Remove selected", size="sm")
-        domain_status = gr.Markdown()
 
     sent = gr.State("")  # stashes the submitted message so the box clears first
 
@@ -363,9 +224,8 @@ def build_discover_tab() -> None:
             return "", "", history
         return "", message, history + [{"role": "user", "content": message}]
 
-    # Two-step: `_accept` runs first with queue=False so the textbox clears and
-    # the user message appears the instant Enter/Send is pressed; then
-    # `discover_fn` runs the agent from the stashed message.
+    # Two-step: `_accept` clears the box and shows the user bubble instantly
+    # (queue=False); then `discover_fn` runs the agent from the stashed message.
     for trigger in (send.click, msg.submit):
         trigger(
             _accept,
@@ -374,40 +234,12 @@ def build_discover_tab() -> None:
             queue=False,
         ).then(
             discover_fn,
-            inputs=[sent, chatbot, agent_state, pending, domain_pending],
-            outputs=[chatbot, agent_state, proposals_md, pending, preview_select,
-                     domain_proposals_md, domain_pending],
+            inputs=[sent, chatbot, agent_state, pending],
+            outputs=[chatbot, agent_state, pending],
         )
 
-    # Open the accordion instantly (queue=False), then stream the placeholder →
-    # parsed text, so the click feels responsive even on a slow fetch.
-    preview.click(
-        lambda: gr.update(open=True), outputs=preview_acc, queue=False
-    ).then(preview_fn, [pending, preview_select], [preview_code])
-    approve.click(approve_fn, [pending], [status, proposals_md, pending, preview_select])
-    dismiss.click(dismiss_fn, None, [status, proposals_md, pending, preview_select])
-    approve_domains.click(
-        approve_domains_fn,
-        [domain_pending, agent_state, chatbot, pending],
-        [chatbot, agent_state, proposals_md, pending, preview_select,
-         domain_proposals_md, domain_pending, domains_group, status],
-    )
-    dismiss_domains.click(
-        dismiss_domains_fn, None, [domain_proposals_md, domain_pending, status]
-    )
     clear.click(
-        lambda: ([], [], _NONE, [], gr.update(choices=[], value=None), _NONE_DOMAINS, []),
-        outputs=[chatbot, agent_state, proposals_md, pending, preview_select,
-                 domain_proposals_md, domain_pending],
+        lambda: ([], [], [], ""),
+        outputs=[chatbot, agent_state, pending, status],
     )
     rebuild.click(rebuild_fn, [refetch_all], [rebuild_status])
-
-    add_domain_btn.click(
-        _domain_add, inputs=domain_input, outputs=[domains_group, domain_input, domain_status]
-    )
-    domain_input.submit(
-        _domain_add, inputs=domain_input, outputs=[domains_group, domain_input, domain_status]
-    )
-    remove_domain_btn.click(
-        _domain_remove, inputs=domains_group, outputs=[domains_group, domain_status]
-    )

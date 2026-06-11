@@ -1,9 +1,10 @@
 """Source overview tab: a read-only view of the corpus registry.
 
 Shows how many **sources** are declared and how many are actually indexed (per
-jurisdiction), plus a per-source table of fetched/indexed status. It deliberately
-does NOT report chunk counts or expose operator buttons — discovery, fetch +
-rebuild, and the search-domain whitelist all live on the Add-source tab.
+jurisdiction), plus a per-source table of fetched ✓/✗ + indexed ✓/✗ status
+(``store.chunk_counts_by_source`` is used only as an "is it indexed?" signal,
+not shown as a number). It exposes no operator buttons — discovery and Fetch +
+rebuild live on the Add-source tab, which reports the numeric chunk counts.
 """
 
 from __future__ import annotations

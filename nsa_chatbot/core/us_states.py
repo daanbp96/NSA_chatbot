@@ -112,16 +112,3 @@ def slug_for(code: str) -> str | None:
     """sources.yaml / corpus slug for a code, or None if it isn't a US state."""
     entry = US_STATES.get((code or "").upper())
     return entry[1] if entry else None
-
-
-def choices() -> list[tuple[str, str]]:
-    """(label, value) pairs for the jurisdiction dropdown: all + federal, then
-    every state by display name. Gradio renders the label and returns the value.
-    """
-    states = sorted(
-        ((name, code) for code, (name, _slug) in US_STATES.items()),
-        key=lambda nc: nc[0],
-    )
-    return [("All jurisdictions", "all"), ("Federal", "federal")] + [
-        (name, code) for name, code in states
-    ]

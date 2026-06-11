@@ -1,6 +1,6 @@
 """Project configuration.
 
-Three kinds of settings, kept deliberately separate:
+Two kinds of settings, kept deliberately separate:
 
 * **Developer defaults** (paths, model ids, retrieval/chunking knobs) — plain
   constants below. Change them here and commit; they are code, not deployment
@@ -8,9 +8,6 @@ Three kinds of settings, kept deliberately separate:
 * **Secrets** (``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``) — NOT defined here.
   The SDKs read them straight from the environment; ``load_dotenv()`` loads a
   local ``.env`` (see ``.env.example``) so they're present in development.
-* **Runtime-editable state** (the search-domain whitelist) lives in a file
-  (``source_domains.txt``, via ``ingest.domains``), not here — these constants
-  freeze at import, so anything that changes while the app runs belongs in a file.
 """
 
 from __future__ import annotations
@@ -28,7 +25,6 @@ ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = ROOT / "corpus"
 INDEX_DIR = ROOT / "index"
 SOURCES_YAML = ROOT / "sources.yaml"
-SOURCE_DOMAINS_FILE = ROOT / "source_domains.txt"
 
 # --- Models -----------------------------------------------------------------
 # Answers are always Anthropic; embeddings always OpenAI (Anthropic has no
@@ -81,33 +77,3 @@ CHUNK_OVERLAP_TOKENS = 80
 # out-of-corpus ~0.89+); beyond it, off-topic questions retrieve nothing and
 # the bot answers "I don't have that in my corpus" instead of citing weak hits.
 RELEVANCE_MAX_DISTANCE = 0.65
-
-# --- Source-discovery whitelist (seed) --------------------------------------
-# Seeds source_domains.txt on first run; the live list is managed from the Admin
-# tab (ingest.domains). Trusted primary-source hosts only; bare domains also
-# match their subdomains (www., etc.).
-SOURCE_DOMAINS = [
-    "ecfr.gov",                    # federal CFR (eCFR)
-    "uscode.house.gov",            # federal USC
-    "cms.gov",                     # CMS NSA / IDR guidance
-    "govinfo.gov",                 # federal (GPO) — statutes, regs, the Register
-    "congress.gov",                # federal (USC, public laws)
-    "leginfo.legislature.ca.gov",  # CA
-    "nysenate.gov",                # NY
-    "newyork.public.law",          # NY mirror (nysenate often 403s)
-    "leg.state.fl.us",             # FL
-    "flsenate.gov",                # FL
-    "ilga.gov",                    # IL
-    "njleg.state.nj.us",           # NJ
-    "statutes.capitol.texas.gov",  # TX statutes (Ins. Code ch. 1467 / SB 1264)
-    "tdi.texas.gov",               # TX — Dept. of Insurance IDR (mediation/arbitration) docs
-    # State government base domains — a base domain auto-covers its subdomains
-    # (the search API rejects bare TLDs / host wildcards), so e.g. tn.gov covers
-    # advance.tn.gov where the TN code lives. tn.gov unblocks TN (the gap state).
-    "tn.gov",
-    "ca.gov",
-    "ny.gov",
-    "nj.gov",
-    "il.gov",
-    "texas.gov",
-]

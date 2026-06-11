@@ -1,13 +1,12 @@
 """Source-discovery agent.
 
-A conversational agent that helps find primary-source documents and proposes
-``sources.yaml`` entries. It searches the open web to locate authoritative
-sources, but may only *propose* a source from a domain on the trusted whitelist;
-for a good source on an off-list domain it first proposes the domain
-(``propose_domain``) for the user's approval. It writes nothing — proposals are
-returned to the UI: the UI adds approved domains (``ingest.domains.add_domain``)
-and approved sources (``ingest.registry.append_source``), then the user rebuilds
-via the existing ``ingest()`` + ``build_index()``.
+A conversational agent that searches the open web for primary-source documents
+and proposes ``sources.yaml`` entries. It writes nothing — proposals are returned
+to the UI, where a human reviews each candidate link and approves it one by one
+(``ingest.registry.append_source``); the user then rebuilds via the existing
+``ingest()`` + ``build_index()``. The human is the trust gate: there is no domain
+whitelist, so the agent is told to bias hard toward primary/official sources and
+the reviewer makes the final call per link.
 """
 
 from __future__ import annotations
@@ -17,62 +16,46 @@ import os
 import anthropic
 
 from nsa_chatbot.config import MODEL_POLICY
-from nsa_chatbot.ingest.domains import read_domains
 
-
-def _system(whitelist: list[str]) -> str:
-    """System prompt, rebuilt per call so the live whitelist (Admin-tab editable)
-    is always reflected."""
-    listed = "\n".join(f"  - {d}" for d in whitelist) or "  (none yet)"
-    return f"""You help a legal-research team find primary-source documents to add
+_SYSTEM = """You help a legal-research team find primary-source documents to add
 to a No Surprises Act / surprise-billing corpus: the federal NSA plus ANY US
 state's surprise-billing / balance-billing / out-of-network dispute-resolution
 law the user asks about.
 
-You can search the open web to locate authoritative sources. These domains are
-already TRUSTED (pre-approved):
-{listed}
+You search the open web. A human reviews every candidate you propose and decides
+whether to keep it, so your job is to surface a good shortlist — not to be the
+final gatekeeper.
 
 Rules:
 - Propose ONLY primary sources: statutes, regulations, or official agency
-  guidance, published on a government / official domain (e.g. a state
-  legislature, a state insurance department, .gov agencies). NEVER propose
-  law-firm blogs, news articles, summaries, or commercial aggregators.
-- A `propose_source` call is allowed ONLY when the source's domain is on the
-  trusted list above. If you find a good primary source on a domain that is NOT
-  on the list, do NOT propose the source yet — instead call `propose_domain`
-  with the host and a short reason (why it's authoritative and what you expect
-  to find there). Once the user approves it, the domain becomes trusted and you
-  can `propose_source` from it on the next turn.
-- You may call `propose_domain` for several hosts and `propose_source` for
-  several documents; proposals accumulate for the user's review. When a request
-  clearly calls for multiple sources, make a separate call for each in the same
-  turn rather than one at a time.
-- `id` is kebab-case and descriptive (e.g. `co-doi-oon-arbitration`,
-  `cms-idr-overview`). `jurisdiction` is `federal` or the US state (its name or
-  2-letter code, e.g. `Colorado` or `CO`). `kind` is statute, regulation, or
-  guidance.
+  guidance (e.g. a state legislature, a state insurance department, .gov
+  agencies, official codes). Strongly avoid law-firm blogs, news articles,
+  summaries, and commercial aggregators — prefer the authoritative original.
+- When the user asks for material, propose SEVERAL candidates (a handful of the
+  best links), each via a `propose_source` call, so the reviewer can pick. In
+  your text reply, list them briefly with a one-line "why it's authoritative"
+  for each. Make all the calls in the same turn rather than one at a time.
+- `id` is kebab-case and descriptive (e.g. `tx-tdi-idr-faq`, `cms-idr-overview`).
+  `jurisdiction` is `federal` or the US state (its name or 2-letter code, e.g.
+  `Texas` or `TX`). `kind` is statute, regulation, or guidance.
 - Infer `fetcher`: an eCFR URL -> `ecfr`; a `.pdf` URL -> `pdf`; otherwise
   `html`. For `ecfr`, include the `url` AND set `title`, `part`, and (if the
   page is a single section) `section_prefix`, read from the eCFR URL, e.g.
   `.../title-45/.../part-149/.../section-149.110` -> title 45, part 149,
   section_prefix "149.110".
-- BE CONCISE. Do not narrate your search process or internal steps (no "Let me
-  search…", "the search returned no results"). Reply only with the result: a
-  one-line confirmation of what you propose, or a brief clarifying question.
-- If the request is vague or out of scope (e.g. "find me a random article"),
-  don't just refuse — proactively suggest 2-3 specific in-scope primary sources
-  you could add (name the citation), or name a state whose coverage is thin, and
-  ask which to pursue.
+- BE CONCISE. Don't narrate your search process. Reply only with the result: a
+  short list of what you propose, or a brief clarifying question.
+- If the request is vague or out of scope, don't just refuse — suggest 2-3
+  specific in-scope primary sources you could add (name the citation) and ask
+  which to pursue.
 """
-
 
 _PROPOSE_TOOL = {
     "name": "propose_source",
     "description": (
         "Propose one primary-source document to add to the corpus registry. "
-        "Call when you've found a specific authoritative page whose domain is on "
-        "the trusted whitelist and you're confident it is in scope."
+        "Call once per candidate; propose several per request so the reviewer "
+        "can choose. The human approves or rejects each link."
     ),
     "input_schema": {
         "type": "object",
@@ -105,35 +88,10 @@ _PROPOSE_TOOL = {
     },
 }
 
-_PROPOSE_DOMAIN_TOOL = {
-    "name": "propose_domain",
-    "description": (
-        "Suggest adding an authoritative domain to the search whitelist, when a "
-        "relevant primary source lives on a domain that is not yet trusted. The "
-        "user must approve before it's added; after approval you can propose "
-        "sources from it. Use a bare host (e.g. 'doi.colorado.gov')."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "host": {
-                "type": "string",
-                "description": "bare host to add, e.g. 'doi.colorado.gov'",
-            },
-            "reason": {
-                "type": "string",
-                "description": "why this domain is authoritative and what primary source(s) you expect to find there",
-            },
-        },
-        "required": ["host", "reason"],
-    },
-}
-
 
 def _web_search_tool() -> dict:
-    # Open web search (no allowed_domains) so the agent can locate authoritative
-    # sources anywhere; the whitelist instead gates which domains it may PROPOSE
-    # sources from (enforced by the system prompt + propose_domain approval).
+    # Open web search (no allowed_domains): the agent locates authoritative
+    # sources anywhere, and the human approves each proposed link.
     return {
         "type": "web_search_20260209",
         "name": "web_search",
@@ -150,29 +108,28 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic()
 
 
-def discover(
-    user_message: str, history: list[dict] | None = None
-) -> tuple[str, list[dict], list[dict], list[dict]]:
-    """Run one discovery turn.
+def discover(user_message: str, history: list[dict] | None = None):
+    """Run one discovery turn, as a **generator** so the UI can show progress
+    (open-web search over several rounds can take up to a minute).
 
-    Returns ``(reply_text, source_proposals, domain_proposals, messages)``: the
-    assistant's text, any ``propose_source`` entries (each a dict ready for
-    ``append_source``), any ``propose_domain`` suggestions (``{host, reason}``,
-    ready for ``add_domain``), and the updated message list to thread forward.
+    Yields ``("progress", note)`` before each model round, then exactly one final
+    ``("result", (reply_text, proposals, messages))`` — the assistant's text, any
+    ``propose_source`` entries (each a dict ready for ``append_source``), and the
+    updated message list to thread into the next call.
     """
     client = _client()
     messages: list[dict] = list(history or [])
     messages.append({"role": "user", "content": user_message})
 
-    tools = [_web_search_tool(), _PROPOSE_TOOL, _PROPOSE_DOMAIN_TOOL]
+    tools = [_web_search_tool(), _PROPOSE_TOOL]
     proposals: list[dict] = []
-    domain_proposals: list[dict] = []
     resp = None
-    for _ in range(_MAX_ITERS):
+    for step in range(_MAX_ITERS):
+        yield ("progress", f"Searching the web for primary sources… (step {step + 1})")
         resp = client.messages.create(
             model=MODEL_POLICY["discover"],
             max_tokens=4000,
-            system=_system(read_domains()),
+            system=_SYSTEM,
             tools=tools,
             messages=messages,
         )
@@ -184,21 +141,12 @@ def discover(
         if resp.stop_reason == "tool_use":
             tool_results = []
             for block in resp.content:
-                if block.type != "tool_use":
-                    continue
-                if block.name == "propose_source":
+                if block.type == "tool_use" and block.name == "propose_source":
                     proposals.append(dict(block.input))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
                         "content": "Recorded — awaiting the user's approval.",
-                    })
-                elif block.name == "propose_domain":
-                    domain_proposals.append(dict(block.input))
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": "Domain suggestion recorded — awaiting the user's approval.",
                     })
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
@@ -209,4 +157,4 @@ def discover(
     reply = "".join(
         b.text for b in (resp.content if resp else []) if b.type == "text"
     )
-    return reply, proposals, domain_proposals, messages
+    yield ("result", (reply, proposals, messages))

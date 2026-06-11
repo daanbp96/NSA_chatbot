@@ -15,12 +15,12 @@ from nsa_chatbot.config import (
     TOP_K,
 )
 from nsa_chatbot.core.chunk import Chunk
-from nsa_chatbot.chat.jurisdiction import extract_citation_tokens
-from nsa_chatbot.store.index import lookup_by_citation, query as vector_query
+from nsa_chatbot.chat.jurisdiction import STATE_NAMES, extract_citation_tokens
+from nsa_chatbot.store.index import lookup_by_citation, query as vector_query, stats
 
 SYSTEM_PROMPT = """You are a careful legal research assistant for the
 Clearest Health internal sales team. You answer questions about the federal
-No Surprises Act (NSA) and surprise-billing laws in IL, CA, NY, NJ, FL, and TN.
+No Surprises Act (NSA) and US state surprise-billing / out-of-network laws.
 
 You operate under strict rules:
 
@@ -78,13 +78,35 @@ You operate under strict rules:
 
 # Off-corpus orientation message: shown when no chunk clears the relevance
 # threshold (off-topic question, greeting, or genuinely outside the corpus).
-OFF_CORPUS_MESSAGE = (
-    "I don't have anything matching that in my corpus. I answer questions "
-    "about the **federal No Surprises Act** and state surprise-billing / IDR "
-    "law in **CA, IL, NY, NJ, FL, and TN** — grounded in primary sources, with "
-    "`[S#]` citations. Try asking about balance billing, emergency services, "
-    "the IDR process, or qualifying payment amounts (you can name a state)."
-)
+# Built from the live index so it names whatever jurisdictions are actually
+# loaded — there is no hardcoded state list.
+def off_corpus_message() -> str:
+    try:
+        jur = stats().get("jurisdictions", {})
+    except Exception:
+        jur = {}
+    states = sorted(STATE_NAMES.get(c, c) for c in jur if c != "federal")
+    has_federal = "federal" in jur
+    if states and has_federal:
+        scope = (
+            "the **federal No Surprises Act** and state surprise-billing / IDR "
+            f"law in **{', '.join(states)}**"
+        )
+    elif states:
+        scope = f"state surprise-billing / IDR law in **{', '.join(states)}**"
+    elif has_federal:
+        scope = "the **federal No Surprises Act**"
+    else:
+        scope = (
+            "the **federal No Surprises Act** and US state surprise-billing / IDR law "
+            "(your corpus is empty — add sources on the Add source tab)"
+        )
+    return (
+        f"I don't have anything matching that in my corpus. I answer questions about "
+        f"{scope} — grounded in primary sources, with `[S#]` citations. Try asking "
+        "about balance billing, emergency services, the IDR process, or qualifying "
+        "payment amounts (you can name a state)."
+    )
 
 # Phase-1 (retrieval-planner) prompt for the agentic loop. The model only
 # decides WHAT to gather; a separate grounded step writes the cited answer.
@@ -127,6 +149,26 @@ SEARCH_TOOL = {
 }
 
 
+# eCFR sources store the versioner *API* URL they were fetched from (raw XML);
+# rewrite it to the human-readable, point-in-time ecfr.gov page for display.
+_ECFR_API_URL = re.compile(
+    r"ecfr\.gov/api/versioner/v\d+/full/(\d{4}-\d{2}-\d{2})/title-(\d+)\.xml\?part=([\w.]+)",
+    re.IGNORECASE,
+)
+
+
+def _display_url(url: str | None) -> str:
+    """Reader-facing URL: eCFR API XML endpoints become the matching ecfr.gov
+    page (at the same issue date); everything else is returned unchanged."""
+    if not url:
+        return ""
+    m = _ECFR_API_URL.search(url)
+    if not m:
+        return url
+    date, title, part = m.group(1), m.group(2), m.group(3)
+    return f"https://www.ecfr.gov/on/{date}/title-{title}/part-{part}"
+
+
 def _format_sources(chunks: list[Chunk]) -> str:
     """Numbered SOURCES block for the LLM prompt."""
     lines: list[str] = []
@@ -140,7 +182,7 @@ def _format_sources(chunks: list[Chunk]) -> str:
             cite_full = f"{citation}, § {section}"
         if sub:
             cite_full += f"({sub})"
-        url = meta.source_url
+        url = _display_url(meta.source_url)
         header = f"[S{i}] {cite_full}"
         if url:
             header += f"  <{url}>"
@@ -151,13 +193,35 @@ def _format_sources(chunks: list[Chunk]) -> str:
 
 
 def _format_source_footer(chunks: list[Chunk]) -> str:
-    """Compact footer for the UI's sources panel."""
-    lines: list[str] = []
+    """Compact footer for the UI's sources panel, grouped by source document.
+
+    The answer cites per-chunk ``[S#]`` numbers, but a single document split into
+    many chunks shouldn't appear as many identical rows. So group chunks by
+    ``(citation, url)`` and emit one line per document — listing every ``[S#]``
+    that maps to it (so any cited number still resolves) and the specific sections
+    those chunks covered (so distinct provisions of the same part stay visible).
+    One line per document, so the panel's "Sources (N)" count is N *documents*.
+    """
+    groups: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
     for i, c in enumerate(chunks, start=1):
         meta = c.metadata
-        citation = meta.citation or "?"
-        url = meta.source_url
-        line = f"[S{i}] {citation}"
+        key = (meta.citation or "?", _display_url(meta.source_url))
+        if key not in groups:
+            groups[key] = {"ids": [], "sections": []}
+            order.append(key)
+        g = groups[key]
+        g["ids"].append(i)
+        if meta.section and meta.section not in g["sections"]:
+            g["sections"].append(meta.section)
+
+    lines: list[str] = []
+    for citation, url in order:
+        g = groups[(citation, url)]
+        ids = ", ".join(f"S{n}" for n in g["ids"])
+        line = f"[{ids}] {citation}"
+        if g["sections"]:
+            line += " (" + ", ".join(f"§ {s}" for s in g["sections"]) + ")"
         if url:
             line += f"  {url}"
         lines.append(line)
@@ -271,21 +335,26 @@ def retrieve(
 
 def retrieve_split(
     question: str,
-    state: str,
+    states: list[str],
     k_state: int = 6,
     k_federal: int = 8,
 ) -> tuple[list[Chunk], list[Chunk]]:
-    """For a specific state, retrieve state-only and federal-only chunks
+    """Retrieve state-only chunks for each of ``states`` plus federal-only chunks,
     separately (each relevance-thresholded), so federal volume can't crowd the
-    state's own material out of a single mixed top-k. Returns
-    ``(state_chunks, federal_chunks)``. Empty ``state_chunks`` means the state
-    has no material relevant enough to this question — the jurisdiction guard
-    treats that as "no coverage".
+    states' own material out of a single mixed top-k. State hits are deduped by id
+    with order preserved (so a 2-state question keeps both states represented).
+    Returns ``(state_chunks, federal_chunks)``. Empty ``state_chunks`` means none
+    of the named states had material relevant enough to this question.
     """
-    return (
-        _retrieve_where(question, {"jurisdiction": state}, k_state),
-        _retrieve_where(question, {"jurisdiction": "federal"}, k_federal),
-    )
+    seen: set[str] = set()
+    state_chunks: list[Chunk] = []
+    for s in states:
+        for c in _retrieve_where(question, {"jurisdiction": s}, k_state):
+            if c.chunk_id not in seen:
+                seen.add(c.chunk_id)
+                state_chunks.append(c)
+    federal_chunks = _retrieve_where(question, {"jurisdiction": "federal"}, k_federal)
+    return state_chunks, federal_chunks
 
 
 def answer_from_chunks(
@@ -405,7 +474,7 @@ def answer_agentic(
     # the [S#] SOURCES block.
     chunks = _collapse_near_dups(list(acc.values()))
     if not chunks:
-        yield ("token", OFF_CORPUS_MESSAGE)
+        yield ("token", off_corpus_message())
         return
     # Cap the SOURCES block: bounds generation cost and footer length. Seed +
     # earliest searches are kept (insertion order).
